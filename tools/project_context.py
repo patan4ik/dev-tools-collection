@@ -5,7 +5,7 @@ project_context.py
 CLI-утилита для объединения кода Python-проекта в один текстовый файл,
 удобный для передачи в контекст LLM (ChatGPT, Claude, Gemini и т.д.).
 
-Version: 1.0.3.0
+Version: 1.0.4.0
 
 Возможности:
 - Рекурсивный обход проекта с учётом .gitignore
@@ -13,8 +13,10 @@ Version: 1.0.3.0
 - Исключение служебных директорий (venv, __pycache__, .git и т.д.)
 - Режим --tree-only: только дерево проекта без содержимого
 - Режим --changed-only: только файлы, изменённые относительно Git (working tree / staged)
-- Режим --signatures-only: только сигнатуры функций/классов (AST), без тела
+- Режим --signatures-only: только сигнатуры функций/классов (AST), без тела, в одном файле
 - Режим --grep PATTERN: только файлы, содержимое которых matches regex
+- Режим --graph: OKF-flavored вывод — один markdown-файл на модуль с YAML
+  frontmatter и явными cross-file ссылками на зависимости (import graph)
 - Предупреждение при full-dump режиме на большом количестве файлов
 - Ограничение размера вывода (--max-chars) с разбиением на части
 - Вывод в файл, в stdout или в буфер обмена (--clipboard)
@@ -26,6 +28,7 @@ python project_context.py --tree-only
 python project_context.py --changed-only --output diff_context.md
 python project_context.py --signatures-only --output signatures.md
 python project_context.py --grep "PortfolioSummary" --output portfolio_context.md
+python project_context.py --graph --output project_graph
 python project_context.py --max-chars 50000 --output context.md
 """
 
@@ -41,7 +44,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.0.3.0"
+VERSION = "1.0.4.0"
 
 # --------------------------------------------------------------------------- #
 # Профили фильтров
@@ -140,6 +143,7 @@ class Config:
     tree_only: bool
     changed_only: bool
     signatures_only: bool
+    graph: bool
     grep_pattern: str | None
     max_chars: int | None
     output_format: str
@@ -281,7 +285,7 @@ def collect_files(cfg: Config) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
-# AST: извлечение сигнатур функций/классов (--signatures-only)
+# AST: извлечение сигнатур функций/классов (--signatures-only, --graph)
 # --------------------------------------------------------------------------- #
 
 
@@ -305,6 +309,82 @@ def extract_signatures(path: Path) -> str:
             suffix = f"({bases})" if bases else ""
             lines.append(f"class {node.name}{suffix}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# AST: извлечение импортов и построение графа зависимостей (--graph)
+# --------------------------------------------------------------------------- #
+
+
+def extract_imports(path: Path) -> list[str]:
+    """Возвращает список имён модулей, импортируемых в файле (top-level)."""
+    if path.suffix not in (".py", ".pyi"):
+        return []
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return []
+
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                modules.append(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                modules.append(node.module.split(".")[0])
+    return modules
+
+
+def build_dependency_graph(
+    files: list[Path], root: Path
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """
+    Строит граф внутренних зависимостей проекта на основе import-выражений.
+
+    Возвращает (depends_on, used_by):
+      depends_on[rel_path] -> список rel_path модулей, от которых зависит файл
+      used_by[rel_path]    -> список rel_path модулей, которые зависят от файла
+    """
+    py_files = [f for f in files if f.suffix in (".py", ".pyi")]
+
+    # Индекс: имя модуля (stem файла) -> список rel_path с таким stem
+    stem_index: dict[str, list[str]] = {}
+    for f in py_files:
+        rel = f.relative_to(root).as_posix()
+        stem_index.setdefault(f.stem, []).append(rel)
+
+    depends_on: dict[str, list[str]] = {}
+    used_by: dict[str, list[str]] = {}
+
+    for f in py_files:
+        rel = f.relative_to(root).as_posix()
+        imported_names = extract_imports(f)
+        deps: list[str] = []
+        for name in imported_names:
+            candidates = stem_index.get(name, [])
+            for cand in candidates:
+                if cand != rel:
+                    deps.append(cand)
+        deps = sorted(set(deps))
+        depends_on[rel] = deps
+        for dep in deps:
+            used_by.setdefault(dep, [])
+            if rel not in used_by[dep]:
+                used_by[dep].append(rel)
+
+    for f in py_files:
+        rel = f.relative_to(root).as_posix()
+        used_by.setdefault(rel, [])
+        used_by[rel] = sorted(set(used_by[rel]))
+
+    return depends_on, used_by
+
+
+def module_id(rel_path: str) -> str:
+    """Преобразует относительный путь в безопасное имя файла для --graph."""
+    return rel_path.replace("/", "_").replace("\\", "_").replace(".", "_") + ".md"
 
 
 # --------------------------------------------------------------------------- #
@@ -469,6 +549,87 @@ def render(files: list[Path], cfg: Config) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# --graph: OKF-flavored многофайловый вывод
+# --------------------------------------------------------------------------- #
+
+
+def render_graph(files: list[Path], cfg: Config) -> dict[str, str]:
+    """
+    Генерирует OKF-flavored вывод: один markdown-файл на модуль с YAML
+    frontmatter (path, depends_on, used_by) и сигнатурами. Плюс index.md
+    со ссылками на все модули.
+
+    Возвращает словарь {имя_файла: содержимое}, который затем пишется
+    на диск функцией write_graph_output().
+    """
+    py_files = [f for f in files if f.suffix in (".py", ".pyi")]
+    depends_on, used_by = build_dependency_graph(py_files, cfg.root)
+
+    output: dict[str, str] = {}
+    index_lines = [
+        "# PROJECT GRAPH INDEX\n",
+        f"Корень проекта: `{cfg.root.resolve()}`\n",
+    ]
+    index_lines.append(f"Модулей: {len(py_files)}\n")
+    index_lines.append("\n## PROJECT TREE\n")
+    index_lines.append("```\n" + build_tree(files, cfg.root) + "\n```\n")
+    index_lines.append("\n## MODULES\n")
+
+    for f in sorted(py_files, key=lambda p: p.relative_to(cfg.root).as_posix()):
+        rel = f.relative_to(cfg.root).as_posix()
+        fname = module_id(rel)
+        deps = depends_on.get(rel, [])
+        users = used_by.get(rel, [])
+        sig = extract_signatures(f)
+
+        fm_deps = ", ".join(deps) if deps else ""
+        fm_users = ", ".join(users) if users else ""
+
+        parts = []
+        parts.append("---")
+        parts.append("type: module")
+        parts.append(f"path: {rel}")
+        parts.append(f"depends_on: [{fm_deps}]")
+        parts.append(f"used_by: [{fm_users}]")
+        parts.append("---\n")
+        parts.append(f"# `{rel}`\n")
+
+        if sig:
+            parts.append("## Signatures\n")
+            parts.append(f"```python\n{sig}\n```\n")
+        else:
+            parts.append("_[нет функций/классов на верхнем уровне]_\n")
+
+        if deps:
+            parts.append("## Dependencies\n")
+            for dep in deps:
+                dep_fname = module_id(dep)
+                parts.append(f"- [{dep}](./{dep_fname})")
+            parts.append("")
+
+        if users:
+            parts.append("## Used by\n")
+            for user in users:
+                user_fname = module_id(user)
+                parts.append(f"- [{user}](./{user_fname})")
+            parts.append("")
+
+        output[fname] = "\n".join(parts)
+        index_lines.append(f"- [{rel}](./{fname})")
+
+    output["index.md"] = "\n".join(index_lines)
+    return output
+
+
+def write_graph_output(graph_files: dict[str, str], cfg: Config) -> Path:
+    out_dir = Path(cfg.output) if cfg.output else Path("project_graph")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for fname, content in graph_files.items():
+        (out_dir / fname).write_text(content, encoding="utf-8")
+    return out_dir
+
+
+# --------------------------------------------------------------------------- #
 # Разбиение на части по лимиту символов
 # --------------------------------------------------------------------------- #
 
@@ -545,7 +706,7 @@ def parse_args() -> Config:
         "--output",
         type=str,
         default="project_context.md",
-        help="Путь к выходному файлу. Пусто/'-' для stdout",
+        help="Путь к выходному файлу (или директории для --graph). Пусто/'-' для stdout",
     )
     parser.add_argument(
         "--tree-only",
@@ -560,7 +721,16 @@ def parse_args() -> Config:
     parser.add_argument(
         "--signatures-only",
         action="store_true",
-        help="Вывести только сигнатуры функций/классов (AST), без тела реализации",
+        help="Вывести только сигнатуры функций/классов (AST) в одном файле",
+    )
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help=(
+            "OKF-flavored вывод: один markdown-файл на модуль с YAML "
+            "frontmatter и cross-file ссылками на import-зависимости, "
+            "плюс index.md. --output трактуется как директория."
+        ),
     )
     parser.add_argument(
         "--grep",
@@ -580,12 +750,12 @@ def parse_args() -> Config:
         type=str,
         choices=["md", "xml"],
         default="md",
-        help="Формат вывода: markdown или xml-like",
+        help="Формат ��ывода: markdown или xml-like (игнорируется при --graph)",
     )
     parser.add_argument(
         "--clipboard",
         action="store_true",
-        help="Скопировать результат в буфер обмена (требует pyperclip)",
+        help="Скопировать результат в буфер обмена (требует pyperclip, игнорируется при --graph)",
     )
     parser.add_argument(
         "--no-gitignore", action="store_true", help="Не учитывать правила .gitignore"
@@ -612,6 +782,7 @@ def parse_args() -> Config:
         tree_only=args.tree_only,
         changed_only=args.changed_only,
         signatures_only=args.signatures_only,
+        graph=args.graph,
         grep_pattern=args.grep_pattern,
         max_chars=args.max_chars,
         output_format=args.format,
@@ -625,6 +796,11 @@ def parse_args() -> Config:
             d.strip() for d in args.exclude_dir.split(",") if d.strip()
         }
 
+    if cfg.graph and cfg.output == "project_context.md":
+        # если пользователь не переопределил --output явно, используем
+        # разумное имя директории по умолчанию для --graph
+        cfg.output = "project_graph"
+
     return cfg
 
 
@@ -633,13 +809,14 @@ def warn_if_full_dump_overload(files: list[Path], cfg: Config) -> None:
         cfg.tree_only
         or cfg.changed_only
         or cfg.signatures_only
+        or cfg.graph
         or cfg.grep_pattern is not None
     )
     if not is_scoped and len(files) > FULL_DUMP_FILE_WARNING_THRESHOLD:
         print(
             f"[warning] Full-dump режим с {len(files)} файлами может перегрузить "
             "контекст LLM и снизить качество ответа. Рассмотрите --changed-only, "
-            "--signatures-only или --grep для более точечного контекста.",
+            "--signatures-only, --graph или --grep для более точечного контекста.",
             file=sys.stderr,
         )
 
@@ -658,6 +835,17 @@ def main() -> None:
         sys.exit(0)
 
     warn_if_full_dump_overload(files, cfg)
+
+    if cfg.graph:
+        graph_files = render_graph(files, cfg)
+        out_dir = write_graph_output(graph_files, cfg)
+        total_chars = sum(len(c) for c in graph_files.values())
+        print(
+            f"Записано в {out_dir}: {len(graph_files)} файлов, "
+            f"{total_chars} символов суммарно.",
+            file=sys.stderr,
+        )
+        return
 
     text = render(files, cfg)
 

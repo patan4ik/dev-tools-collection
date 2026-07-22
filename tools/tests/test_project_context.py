@@ -8,6 +8,7 @@ tests/test_project_context.py
 import subprocess
 import sys
 from pathlib import Path
+import re
 
 TOOL_PATH = Path(__file__).parent.parent / "project_context.py"
 
@@ -79,6 +80,33 @@ def test_full_dump_warning_triggered_above_threshold(tmp_path):
     assert "Full-dump" in result.stderr
 
 
+def test_graph_mode_creates_linked_files(tmp_path):
+    (tmp_path / "a.py").write_text(
+        "from b import helper\ndef use():\n    return helper()\n"
+    )
+    (tmp_path / "b.py").write_text("def helper():\n    return 1\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL_PATH),
+            "--root",
+            str(tmp_path),
+            "--graph",
+            "--output",
+            str(tmp_path / "graph_out"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+    graph_dir = tmp_path / "graph_out"
+    assert graph_dir.exists()
+    a_content = (graph_dir / "a_py.md").read_text()
+    assert "depends_on: [b.py]" in a_content
+    assert "[b.py](./b_py.md)" in a_content
+
+
 def test_no_warning_when_scoped_with_signatures_only(tmp_path):
     make_sample_project(tmp_path)
     for i in range(45):
@@ -101,4 +129,8 @@ def test_version_flag(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert "1.0.3.0" in result.stdout
+    source = TOOL_PATH.read_text(encoding="utf-8")
+    match = re.search(r'^VERSION\s*=\s*"([^"]+)"', source, re.MULTILINE)
+    assert match, "VERSION constant not found in project_context.py"
+    expected_version = match.group(1)
+    assert expected_version in result.stdout
