@@ -5,32 +5,43 @@ project_context.py
 CLI-утилита для объединения кода Python-проекта в один текстовый файл,
 удобный для передачи в контекст LLM (ChatGPT, Claude, Gemini и т.д.).
 
+Version: 1.0.3.0
+
 Возможности:
-  - Рекурсивный обход проекта с учётом .gitignore
-  - Фильтр по расширениям/именам файлов (профиль "python" по умолчанию)
-  - Исключение служебных директорий (venv, __pycache__, .git и т.д.)
-  - Режим --tree-only: только дерево проекта без содержимого
-  - Режим --changed-only: только файлы, изменённые относительно Git (working tree / staged)
-  - Ограничение размера вывода (--max-chars) с разбиением на части
-  - Вывод в файл, в stdout или в буфер обмена (--clipboard)
-  - Формат вывода: markdown (по умолчанию) или xml-like блоки
+- Рекурсивный обход проекта с учётом .gitignore
+- Фильтр по расширениям/именам файлов (профиль "python" по умолчанию)
+- Исключение служебных директорий (venv, __pycache__, .git и т.д.)
+- Режим --tree-only: только дерево проекта без содержимого
+- Режим --changed-only: только файлы, изменённые относительно Git (working tree / staged)
+- Режим --signatures-only: только сигнатуры функций/классов (AST), без тела
+- Режим --grep PATTERN: только файлы, содержимое которых matches regex
+- Предупреждение при full-dump режиме на большом количестве файлов
+- Ограничение размера вывода (--max-chars) с разбиением на части
+- Вывод в файл, в stdout или в буфер обмена (--clipboard)
+- Формат вывода: markdown (по умолчанию) или xml-like блоки
 
 Пример использования:
-    python project_context.py --root . --output context.md
-    python project_context.py --tree-only
-    python project_context.py --changed-only --output diff_context.md
-    python project_context.py --max-chars 50000 --output context.md
+python project_context.py --root . --output context.md
+python project_context.py --tree-only
+python project_context.py --changed-only --output diff_context.md
+python project_context.py --signatures-only --output signatures.md
+python project_context.py --grep "PortfolioSummary" --output portfolio_context.md
+python project_context.py --max-chars 50000 --output context.md
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+VERSION = "1.0.3.0"
 
 # --------------------------------------------------------------------------- #
 # Профили фильтров
@@ -119,6 +130,7 @@ DEFAULT_EXCLUDE_FILES = {
 }
 
 MAX_FILE_SIZE_BYTES = 300_000  # файлы больше этого лимита не выводятся целиком
+FULL_DUMP_FILE_WARNING_THRESHOLD = 40  # порог для предупреждения о перегрузке контекста
 
 
 @dataclass
@@ -127,6 +139,8 @@ class Config:
     output: str | None
     tree_only: bool
     changed_only: bool
+    signatures_only: bool
+    grep_pattern: str | None
     max_chars: int | None
     output_format: str
     clipboard: bool
@@ -206,6 +220,19 @@ def get_changed_files(root: Path) -> set[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Relevance filter: --grep
+# --------------------------------------------------------------------------- #
+
+
+def matches_grep(path: Path, pattern: re.Pattern) -> bool:
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return pattern.search(content) is not None
+
+
+# --------------------------------------------------------------------------- #
 # Обход проекта
 # --------------------------------------------------------------------------- #
 
@@ -229,6 +256,7 @@ def should_include_file(path: Path, cfg: Config) -> bool:
 def collect_files(cfg: Config) -> list[Path]:
     gitignore_patterns = load_gitignore_patterns(cfg.root) if cfg.use_gitignore else []
     changed_files = get_changed_files(cfg.root) if cfg.changed_only else None
+    grep_re = re.compile(cfg.grep_pattern, re.IGNORECASE) if cfg.grep_pattern else None
 
     collected: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(cfg.root):
@@ -244,10 +272,39 @@ def collect_files(cfg: Config) -> list[Path]:
                 continue
             if changed_files is not None and rel_path not in changed_files:
                 continue
+            if grep_re is not None and not matches_grep(full_path, grep_re):
+                continue
 
             collected.append(full_path)
 
     return sorted(collected)
+
+
+# --------------------------------------------------------------------------- #
+# AST: извлечение сигнатур функций/классов (--signatures-only)
+# --------------------------------------------------------------------------- #
+
+
+def extract_signatures(path: Path) -> str:
+    if path.suffix not in (".py", ".pyi"):
+        return ""
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return ""
+
+    lines: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = ", ".join(a.arg for a in node.args.args)
+            prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+            lines.append(f"{prefix} {node.name}({args})")
+        elif isinstance(node, ast.ClassDef):
+            bases = ", ".join(b.id for b in node.bases if isinstance(b, ast.Name))
+            suffix = f"({bases})" if bases else ""
+            lines.append(f"class {node.name}{suffix}")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -294,7 +351,6 @@ def read_file_content(path: Path, cfg: Config) -> str | None:
             f"[файл пропущен: размер {size} байт превышает лимит {MAX_FILE_SIZE_BYTES}]"
         )
 
-    raw = None
     try:
         raw = path.read_bytes()
     except OSError:
@@ -348,6 +404,15 @@ def render_markdown(files: list[Path], cfg: Config) -> str:
     if cfg.tree_only:
         return "\n".join(parts)
 
+    if cfg.signatures_only:
+        parts.append("\n## SIGNATURES\n")
+        for f in files:
+            rel = f.relative_to(cfg.root).as_posix()
+            sig = extract_signatures(f)
+            if sig:
+                parts.append(f"\n### `{rel}`\n```python\n{sig}\n```\n")
+        return "\n".join(parts)
+
     parts.append("\n## FILE CONTENTS\n")
     for f in files:
         rel = f.relative_to(cfg.root).as_posix()
@@ -367,25 +432,32 @@ def render_xml(files: list[Path], cfg: Config) -> str:
     parts.append("<project_context>")
     parts.append(f"  <root>{cfg.root.resolve()}</root>")
     parts.append(f"  <file_count>{len(files)}</file_count>")
-    parts.append("  <tree><![CDATA[")
-    parts.append(build_tree(files, cfg.root))
-    parts.append("  ]]></tree>")
+    parts.append(f"  <tree><![CDATA[\n{build_tree(files, cfg.root)}\n]]></tree>")
 
-    if not cfg.tree_only:
-        parts.append("  <files>")
+    if cfg.tree_only:
+        parts.append("</project_context>")
+        return "\n".join(parts)
+
+    if cfg.signatures_only:
+        parts.append("  <signatures>")
         for f in files:
             rel = f.relative_to(cfg.root).as_posix()
-            content = read_file_content(f, cfg)
-            parts.append(f'    <file path="{rel}">')
-            if content is None:
-                parts.append("      <!-- содержимое не выводится -->")
-            else:
-                parts.append("      <![CDATA[")
-                parts.append(content)
-                parts.append("      ]]>")
-            parts.append("    </file>")
-        parts.append("  </files>")
+            sig = extract_signatures(f)
+            if sig:
+                parts.append(f'    <file path="{rel}"><![CDATA[\n{sig}\n]]></file>')
+        parts.append("  </signatures>")
+        parts.append("</project_context>")
+        return "\n".join(parts)
 
+    parts.append("  <files>")
+    for f in files:
+        rel = f.relative_to(cfg.root).as_posix()
+        content = read_file_content(f, cfg)
+        if content is None:
+            parts.append(f'    <file path="{rel}" hidden="true"/>')
+        else:
+            parts.append(f'    <file path="{rel}"><![CDATA[\n{content}\n]]></file>')
+    parts.append("  </files>")
     parts.append("</project_context>")
     return "\n".join(parts)
 
@@ -464,6 +536,9 @@ def parse_args() -> Config:
         description="Объединяет код Python-проекта в один файл для LLM-контекста."
     )
     parser.add_argument(
+        "--version", action="version", version=f"project_context.py {VERSION}"
+    )
+    parser.add_argument(
         "--root", type=str, default=".", help="Корневая директория проекта"
     )
     parser.add_argument(
@@ -481,6 +556,18 @@ def parse_args() -> Config:
         "--changed-only",
         action="store_true",
         help="Включить только изменённые (git status) файлы",
+    )
+    parser.add_argument(
+        "--signatures-only",
+        action="store_true",
+        help="Вывести только сигнатуры функций/классов (AST), без тела реализации",
+    )
+    parser.add_argument(
+        "--grep",
+        type=str,
+        default=None,
+        dest="grep_pattern",
+        help="Включать только файлы, содержимое которых matches regex-паттерн",
     )
     parser.add_argument(
         "--max-chars",
@@ -515,7 +602,6 @@ def parse_args() -> Config:
         default=None,
         help="Доп. директории для исключения через запятую",
     )
-
     args = parser.parse_args()
 
     output = None if (args.output in ("-", "", None)) else args.output
@@ -525,12 +611,13 @@ def parse_args() -> Config:
         output=output,
         tree_only=args.tree_only,
         changed_only=args.changed_only,
+        signatures_only=args.signatures_only,
+        grep_pattern=args.grep_pattern,
         max_chars=args.max_chars,
         output_format=args.format,
         clipboard=args.clipboard,
         use_gitignore=not args.no_gitignore,
     )
-
     if args.include_ext:
         cfg.include_ext |= {e.strip() for e in args.include_ext.split(",") if e.strip()}
     if args.exclude_dir:
@@ -539,6 +626,22 @@ def parse_args() -> Config:
         }
 
     return cfg
+
+
+def warn_if_full_dump_overload(files: list[Path], cfg: Config) -> None:
+    is_scoped = (
+        cfg.tree_only
+        or cfg.changed_only
+        or cfg.signatures_only
+        or cfg.grep_pattern is not None
+    )
+    if not is_scoped and len(files) > FULL_DUMP_FILE_WARNING_THRESHOLD:
+        print(
+            f"[warning] Full-dump режим с {len(files)} файлами может перегрузить "
+            "контекст LLM и снизить качество ответа. Рассмотрите --changed-only, "
+            "--signatures-only или --grep для более точечного контекста.",
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
@@ -553,6 +656,8 @@ def main() -> None:
     if not files:
         print("Не найдено ни одного файла, подходящего под фильтры.", file=sys.stderr)
         sys.exit(0)
+
+    warn_if_full_dump_overload(files, cfg)
 
     text = render(files, cfg)
 
