@@ -1,0 +1,52 @@
+name: Build binaries
+
+on:
+  push:
+    tags: [ "v*" ]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install package and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[report]"
+          pip install pyinstaller
+
+      - name: Build project-context binary
+        run: pyinstaller --onefile --name project-context src/dev_tools/project_context/cli.py
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-context-${{ matrix.os }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

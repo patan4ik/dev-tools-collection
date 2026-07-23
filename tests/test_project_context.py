@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 import re
 
-TOOL_PATH = (Path(__file__).parent.parent / "src" / "dev_tools" / "project_context" / "cli.py")
+TOOL_PATH = (
+    Path(__file__).parent.parent / "src" / "dev_tools" / "project_context" / "cli.py"
+)
 
 
 def make_sample_project(tmp_path: Path) -> Path:
