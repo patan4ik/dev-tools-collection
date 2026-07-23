@@ -1,0 +1,24 @@
+# .gitignore
+.venv/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+UAT_Package/
+.env
+.idea/
+.vscode/
+balances_history/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.spec
+*.exe
+*.key
+*.db
+*.master
+*.zip
+coverage.xml
+.coverage
+htmlcov/

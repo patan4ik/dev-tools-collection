@@ -1,0 +1,21 @@
+[project]
+name = "dev-tools-collection"
+version = "1.5.0"
+description = "A collection of standalone developer CLI tools."
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+report = ["tiktoken"]
+
+[project.scripts]
+project-context = "dev_tools.project_context.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

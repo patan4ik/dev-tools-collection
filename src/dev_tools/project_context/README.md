@@ -4,7 +4,7 @@ CLI utility that turns a Python repository into a single, LLM-ready context docu
 
 ## Modes and measured token cost
 
-As of v1.0.5.0, this table is generated directly by the tool's built-in `--report` command against a production codebase (Kraken portfolio tracker), measured with `tiktoken` (`cl100k_base` encoding) — not estimates, not manual scripts.
+As of v1.5.0, this table is generated directly by the tool's built-in `--report` command against a production codebase (Kraken portfolio tracker), measured with `tiktoken` (`cl100k_base` encoding) — not estimates, not manual scripts.
 
 | Mode | Purpose | Chars | Tokens | Reduction vs. full | Smaller |
 |---|---|---|---|---|---|

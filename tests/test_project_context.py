@@ -1,7 +1,7 @@
 """
 tests/test_project_context.py
 
-Тесты для project_context.py v1.0.3.0
+Тесты для project_context.py v1.5.0
 Запуск: pytest tests/test_project_context.py -v
 """
 
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 import re
 
-TOOL_PATH = Path(__file__).parent.parent / "project_context.py"
+TOOL_PATH = (Path(__file__).parent.parent / "src" / "dev_tools" / "project_context" / "cli.py")
 
 
 def make_sample_project(tmp_path: Path) -> Path:

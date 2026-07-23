@@ -5,7 +5,7 @@ project_context.py
 CLI-утилита для объединения кода Python-проекта в один текстовый файл,
 удобный для передачи в контекст LLM (ChatGPT, Claude, Gemini и т.д.).
 
-Version: 1.0.5.0
+Version: 1.5.0
 
 Возможности:
 - Рекурсивный обход проекта с учётом .gitignore
@@ -49,7 +49,7 @@ import tiktoken
 import importlib.util
 from dataclasses import replace
 
-VERSION = "1.0.5.0"
+VERSION = "1.5.0"
 
 # --------------------------------------------------------------------------- #
 # Профили фильтров
