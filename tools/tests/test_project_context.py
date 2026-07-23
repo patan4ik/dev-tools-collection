@@ -134,3 +134,46 @@ def test_version_flag(tmp_path):
     assert match, "VERSION constant not found in project_context.py"
     expected_version = match.group(1)
     assert expected_version in result.stdout
+
+
+def test_report_prints_comparison_table(tmp_path):
+    make_sample_project(tmp_path)
+    result = subprocess.run(
+        [sys.executable, str(TOOL_PATH), "--root", str(tmp_path), "--report"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Mode" in result.stdout
+    assert "full" in result.stdout
+    assert "signatures-only" in result.stdout
+    assert "graph" in result.stdout
+
+
+def test_report_includes_grep_row_when_pattern_given(tmp_path):
+    make_sample_project(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL_PATH),
+            "--root",
+            str(tmp_path),
+            "--report",
+            "--grep",
+            "hello",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "grep:hello" in result.stdout
+
+
+def test_report_does_not_write_output_file(tmp_path):
+    make_sample_project(tmp_path)
+    subprocess.run(
+        [sys.executable, str(TOOL_PATH), "--root", str(tmp_path), "--report"],
+        capture_output=True,
+        text=True,
+    )
+    assert not (tmp_path / "project_context.md").exists()

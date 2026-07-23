@@ -5,7 +5,7 @@ project_context.py
 CLI-утилита для объединения кода Python-проекта в один текстовый файл,
 удобный для передачи в контекст LLM (ChatGPT, Claude, Gemini и т.д.).
 
-Version: 1.0.4.0
+Version: 1.0.5.0
 
 Возможности:
 - Рекурсивный обход проекта с учётом .gitignore
@@ -16,6 +16,7 @@ Version: 1.0.4.0
 - Режим --signatures-only: только сигнатуры функций/классов (AST), без тела, в одном файле
 - Режим --grep PATTERN: только файлы, содержимое которых matches regex
 - Режим --graph: OKF-flavored вывод — один markdown-файл на модуль с YAML
+- Режим --report: Benchmarks вывод — Benchmarking your own project
   frontmatter и явными cross-file ссылками на зависимости (import graph)
 - Предупреждение при full-dump режиме на большом количестве файлов
 - Ограничение размера вывода (--max-chars) с разбиением на части
@@ -30,6 +31,7 @@ python project_context.py --signatures-only --output signatures.md
 python project_context.py --grep "PortfolioSummary" --output portfolio_context.md
 python project_context.py --graph --output project_graph
 python project_context.py --max-chars 50000 --output context.md
+python project_context.py --report --grep "PortfolioSummary"
 """
 
 from __future__ import annotations
@@ -43,8 +45,11 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+import tiktoken
+import importlib.util
+from dataclasses import replace
 
-VERSION = "1.0.4.0"
+VERSION = "1.0.5.0"
 
 # --------------------------------------------------------------------------- #
 # Профили фильтров
@@ -148,6 +153,7 @@ class Config:
     max_chars: int | None
     output_format: str
     clipboard: bool
+    report: bool
     include_ext: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_EXT))
     include_names: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_NAMES))
     exclude_dirs: set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
@@ -688,6 +694,76 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Benchmarks
+# --------------------------------------------------------------------------- #
+
+
+def run_benchmark(cfg: Config) -> list[dict]:
+    """
+    Executes full, signatures-only, and graph modes against the same
+    project root, measures tiktoken cl100k_base token counts and raw
+    character counts for each, and returns comparison rows.
+
+    If cfg.grep_pattern is set, also benchmarks the --grep mode using
+    that pattern.
+    """
+
+    enc = tiktoken.get_encoding("cl100k_base")
+    rows = []
+
+    def measure(label: str, text_or_texts) -> dict:
+        if isinstance(text_or_texts, dict):
+            chars = sum(len(t) for t in text_or_texts.values())
+            tokens = sum(len(enc.encode(t)) for t in text_or_texts.values())
+        else:
+            chars = len(text_or_texts)
+            tokens = len(enc.encode(text_or_texts))
+        return {"mode": label, "characters": chars, "tokens": tokens}
+
+    base_cfg = replace(
+        cfg, tree_only=False, signatures_only=False, graph=False, grep_pattern=None
+    )
+    full_files = collect_files(base_cfg)
+    full_text = render(full_files, base_cfg)
+    rows.append(measure("full", full_text))
+
+    sig_cfg = replace(base_cfg, signatures_only=True)
+    sig_files = collect_files(sig_cfg)
+    sig_text = render(sig_files, sig_cfg)
+    rows.append(measure("signatures-only", sig_text))
+
+    if cfg.grep_pattern:
+        grep_cfg = replace(base_cfg, grep_pattern=cfg.grep_pattern)
+        grep_files = collect_files(grep_cfg)
+        grep_text = render(grep_files, grep_cfg)
+        rows.append(measure(f"grep:{cfg.grep_pattern}", grep_text))
+
+    graph_cfg = replace(base_cfg, graph=True)
+    graph_files = collect_files(graph_cfg)
+    graph_dict = render_graph(graph_files, graph_cfg)
+    rows.append(measure("graph", graph_dict))
+
+    baseline_tokens = rows[0]["tokens"]
+    for row in rows:
+        row["reduction_pct"] = round(100 * (1 - row["tokens"] / baseline_tokens), 1)
+        row["multiplier"] = round(baseline_tokens / row["tokens"], 1)
+
+    return rows
+
+
+def print_benchmark_table(rows: list[dict]) -> None:
+    print(
+        f"{'Mode':<20} {'Chars':>10} {'Tokens':>10} {'Reduction':>10} {'Smaller':>10}"
+    )
+    print("-" * 62)
+    for row in rows:
+        print(
+            f"{row['mode']:<20} {row['characters']:>10} {row['tokens']:>10} "
+            f"{row['reduction_pct']:>9}% {row['multiplier']:>9}x"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -750,7 +826,7 @@ def parse_args() -> Config:
         type=str,
         choices=["md", "xml"],
         default="md",
-        help="Формат ��ывода: markdown или xml-like (игнорируется при --graph)",
+        help="Формат вывода: markdown или xml-like (игнорируется при --graph)",
     )
     parser.add_argument(
         "--clipboard",
@@ -772,6 +848,15 @@ def parse_args() -> Config:
         default=None,
         help="Доп. директории для исключения через запятую",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help=(
+            "Run full, signatures-only, graph (and grep, if --grep is set) "
+            "modes against the same root and print a token/character "
+            "comparison table using tiktoken (cl100k_base)."
+        ),
+    )
     args = parser.parse_args()
 
     output = None if (args.output in ("-", "", None)) else args.output
@@ -787,6 +872,7 @@ def parse_args() -> Config:
         max_chars=args.max_chars,
         output_format=args.format,
         clipboard=args.clipboard,
+        report=args.report,
         use_gitignore=not args.no_gitignore,
     )
     if args.include_ext:
@@ -827,6 +913,17 @@ def main() -> None:
     if not cfg.root.exists():
         print(f"Ошибка: директория {cfg.root} не найдена", file=sys.stderr)
         sys.exit(1)
+
+    if cfg.report:
+        if importlib.util.find_spec("tiktoken") is None:
+            print(
+                "--report requires tiktoken. Install with: pip install tiktoken",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        rows = run_benchmark(cfg)
+        print_benchmark_table(rows)
+        return
 
     files = collect_files(cfg)
 
