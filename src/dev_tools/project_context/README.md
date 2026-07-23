@@ -4,14 +4,13 @@ CLI utility that turns a Python repository into a single, LLM-ready context docu
 
 ## Modes and measured token cost
 
-As of v1.6.0, this table is generated directly by the tool's built-in `--report` command against a production codebase (Kraken portfolio tracker), measured with `tiktoken` (`cl100k_base` encoding) — not estimates, not manual scripts.
+As of v1.6.0, this table is generated directly by the tool's built-in `--report` command, run against this repository itself, measured with `tiktoken` (`cl100k_base` encoding).
 
 | Mode | Purpose | Chars | Tokens | Reduction vs. full | Smaller |
 |---|---|---|---|---|---|
-| `--report` full dump | Full tree + full file contents | 330,126 | 81,325 | baseline | 1.0x |
-| `--signatures-only` | Function/class signatures via AST, no bodies | 18,786 | 4,630 | 94.3% fewer | 17.6x |
-| `--grep "PortfolioSummary"` | Only files matching a regex, full detail kept | 101,550 | 24,355 | 70.1% fewer | 3.3x |
-| `--graph` | OKF-flavored per-module files with dependency links | 31,519 | 8,250 | 89.9% fewer | 9.9x |
+| `--report` full dump | Full tree + full file contents | 53,941 | 13,079 | baseline | 1.0x |
+| `--signatures-only` | Function/class signatures via AST, no bodies | 2,184 | 568 | 95.7% fewer | 23.0x |
+| `--graph` | OKF-flavored per-module files with dependency links | 3,027 | 812 | 93.8% fewer | 16.1x |
 | `--tree-only` | Architecture only, no file contents | not in `--report` | expect <1% of full dump | very low | — |
 
 Note on `--graph`: it costs more tokens than `--signatures-only`, because each module carries its own YAML frontmatter and dependency links. The tradeoff isn't token savings — it's navigability. Use it when you want to open one module and immediately see its exact dependencies without loading the entire signature map at once.
