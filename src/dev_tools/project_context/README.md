@@ -1,10 +1,10 @@
-# project_context.py — Usage Guide
+# project-context — Usage Guide
 
-CLI utility that turns a Python repository into a single, LLM-ready context document. Designed to be dropped into a `tools/` folder of any Python project and reused across projects without modification.
+CLI utility that turns a Python repository into a single, LLM-ready context document. Part of the [dev-tools-collection](https://github.com/patan4ik/dev-tools-collection) toolbox — installable as a standalone command or usable as a frozen binary.
 
 ## Modes and measured token cost
 
-As of v1.5.0, this table is generated directly by the tool's built-in `--report` command against a production codebase (Kraken portfolio tracker), measured with `tiktoken` (`cl100k_base` encoding) — not estimates, not manual scripts.
+As of v1.6.0, this table is generated directly by the tool's built-in `--report` command against a production codebase (Kraken portfolio tracker), measured with `tiktoken` (`cl100k_base` encoding) — not estimates, not manual scripts.
 
 | Mode | Purpose | Chars | Tokens | Reduction vs. full | Smaller |
 |---|---|---|---|---|---|
@@ -22,58 +22,66 @@ Running the default full-dump mode on more than 40 files without any scoping fla
 
 ## Installation
 
-No external dependencies required for core functionality. Optional:
+Install the whole collection in editable mode from the repo root:
+
+```bash
+pip install -e .
+```
+
+Optional extras:
 
 ```bash
 pip install pyperclip   # only needed for --clipboard
-pip install tiktoken    # only needed for --report
+pip install -e ".[report]"   # installs tiktoken, needed for --report
 ```
+
+Once installed, the tool is available as the `project-context` command anywhere in your shell — no need to reference the file path.
 
 ## Examples
 
 Starting a new LLM chat with full context:
 ```bash
-python tools/project_context.py --output context.md
+project-context --output context.md
 ```
 
 Mid-refactor update — only files you just edited:
 ```bash
-python tools/project_context.py --changed-only --clipboard
+project-context --changed-only --clipboard
 ```
 
 Architecture-only review (e.g. onboarding a new AI session):
 ```bash
-python tools/project_context.py --tree-only
+project-context --tree-only
 ```
 
 Reviewing only logic related to a specific class or feature, with full detail:
 ```bash
-python tools/project_context.py --grep "PortfolioSummary" --output portfolio_context.md
+project-context --grep "PortfolioSummary" --output portfolio_context.md
 ```
 
 Getting a fast interface map without full code — cheapest way to give an LLM architectural awareness of a large codebase (measured 17.6x token reduction):
 ```bash
-python tools/project_context.py --signatures-only --output signatures.md
+project-context --signatures-only --output signatures.md
 ```
 
 OKF-flavored dependency graph — one markdown file per module with explicit import links, useful for scoped, iterative exploration:
 ```bash
-python tools/project_context.py --graph --output project_graph
+project-context --graph --output project_graph
 ```
 
 Splitting a large context into chunks under a model's context window:
 ```bash
-python tools/project_context.py --max-chars 50000 --output context.md
+project-context --max-chars 50000 --output context.md
 ```
 
 Using XML-like output instead of Markdown:
 ```bash
-python tools/project_context.py --format xml --output context.xml
+project-context --format xml --output context.xml
 ```
 
 Benchmarking all modes at once (requires `tiktoken`):
 ```bash
-python tools/project_context.py --report --grep "YourClassName"
+project-context --report --grep "YourClassName"
 ```
 
 ## Recommended workflow
@@ -91,8 +99,8 @@ The tool has a built-in benchmark command — you no longer need to run separate
 
 ```bash
 pip install tiktoken
-python tools/project_context.py --report
-python tools/project_context.py --report --grep "YourClassName"
+project-context --report
+project-context --report --grep "YourClassName"
 ```
 
 This runs full, `--signatures-only`, `--graph` (and `--grep`, if provided) against the same root, measures both character and `cl100k_base` token counts for each, and prints a single comparison table.
@@ -100,13 +108,21 @@ This runs full, `--signatures-only`, `--graph` (and `--grep`, if provided) again
 Manual, single-mode runs are still available if you want the actual output file rather than just the metrics:
 
 ```bash
-python tools/project_context.py --output full.md
-python tools/project_context.py --signatures-only --output sig.md
-python tools/project_context.py --grep "YourClassName" --output grep.md
-python tools/project_context.py --graph --output project_graph
+project-context --output full.md
+project-context --signatures-only --output sig.md
+project-context --grep "YourClassName" --output grep.md
+project-context --graph --output project_graph
 ```
 
 Sample outputs generated for benchmarking (e.g. `full.md`, `sig.md`, `grep.md`, `test_context.md`, `project_graph/`) are disposable — they are not consumed by the tool, its tests, or CI, and should not be committed to version control. Add them to `.gitignore` if you regenerate them locally.
+
+## Running from source (without installing)
+
+If you're developing the tool itself and want to run it directly from source without reinstalling:
+
+```bash
+python src/dev_tools/project_context/cli.py --tree-only
+```
 
 ## Testing
 
@@ -117,4 +133,4 @@ pytest tests/test_project_context.py -v
 
 ## Version history
 
-See `CHANGELOG.md` for the full history of changes.
+See the root [`CHANGELOG.md`](../../../CHANGELOG.md) for the full history of changes.
