@@ -1,7 +1,7 @@
 """
 tests/test_project_context.py
 
-Тесты для project_context.py v1.5.0
+Тесты для project_context.py v1.6.0
 Запуск: pytest tests/test_project_context.py -v
 """
 
