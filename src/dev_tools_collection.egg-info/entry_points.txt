@@ -1,2 +1,0 @@
-[console_scripts]
-project-context = dev_tools.project_context.cli:main

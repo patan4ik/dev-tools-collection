@@ -1,7 +1,11 @@
 # .gitignore
 .venv/
+.venv-devtools/
+**/*.egg-info/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+project_graph/
 build/
 dist/
 UAT_Package/
