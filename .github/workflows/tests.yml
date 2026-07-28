@@ -43,4 +43,5 @@ jobs:
         run: ruff check .
 
       - name: Run tests with coverage
-	run: pytest tests/ -v
+        run: |
+          pytest tests/ -v
