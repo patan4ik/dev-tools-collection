@@ -88,6 +88,16 @@ Disabling automatic convention detection (e.g. for a clean baseline comparison):
 project-context --no-conventions --output context.md
 ```
 
+Disabling the mandatory baseline files bundle and architecture plan gate entirely:
+```bash
+project-context --no-baseline --output context.md
+```
+
+Keeping the baseline files (dependency manifest, CI config, reference test) but dropping only the Step 1/Step 2 planning instructions:
+```bash
+project-context --no-plan-gate --output context.md
+```
+
 ## Recommended workflow
 
 1. Start a new AI conversation with `--tree-only` so the model understands the architecture first.
@@ -97,6 +107,7 @@ project-context --no-conventions --output context.md
 5. For scoped, navigable exploration of one module and its dependencies, use `--graph` — it costs more tokens than `--signatures-only`, but structures the output as linked per-module files instead of one flat block.
 6. Reserve the unscoped full-dump mode for small projects or first-time full audits — expect the warning on repositories with 40+ files.
 7. Leave `PROJECT CONVENTIONS DETECTED` enabled by default for any code-generation task — it costs a small, fixed number of tokens per run and is the single change most likely to prevent an LLM from silently skipping your test suite, lint config, or dependency file.
+8. Leave `MANDATORY BASELINE FILES` and the `ARCHITECTURE PLAN GATE` enabled for any task that adds real code — the forced pre-commitment plan is the single change most likely to catch a missing test file or a silently-skipped dependency update before the model finishes responding. Use `--no-plan-gate` alone if you want the baseline facts without the two-phase planning overhead.
 
 ## PROJECT CONVENTIONS DETECTED (new in v1.7.0)
 
@@ -118,6 +129,29 @@ Disable this section — for example, to run a clean A/B baseline against an old
 project-context --no-conventions --output context.md
 ```
 
+## MANDATORY BASELINE FILES + ARCHITECTURE PLAN GATE (new in v1.8.0, fixed in v1.8.1)
+
+`PROJECT CONVENTIONS DETECTED` tells the model *what the rules are*. As of v1.8.0, `project-context` goes one step further and forces the model to *commit to a plan* before writing any code, and to *self-audit* against that plan afterward.
+
+**MANDATORY BASELINE FILES** embeds, verbatim, the project's real contract files — dependency manifest, CI config, pre-commit config — detected by role/content signature rather than by a hardcoded filename, plus one real reference test file selected using stable Python/pytest/unittest rules (AST `assert`, `unittest.TestCase`, pytest fixtures/imports; `testpaths` from `pyproject.toml`/`pytest.ini`/`tox.ini`/`setup.cfg` if declared). This bundle is attached in every output mode, including `--tree-only`.
+
+**ARCHITECTURE PLAN GATE** is a Plan-and-Solve style two-phase instruction block:
+- **Step 1 — Architecture Plan (before code):** the model must state the target module path, the exact dependency-manifest diff, the test file it will add (modeled on the reference test file), which CI/lint/type/ security gates apply, and any version/security constraints.
+- **Step 2 — Self-Validation Checklist (after code):** the model must re-read its own Step 1 plan and mark each item PASS/FAIL with a concrete artifact, so an incomplete response can't slip through unnoticed.
+
+Disable both the bundle and the gate:
+```bash
+project-context --no-baseline --output context.md
+```
+
+Keep the baseline bundle but disable only the plan gate:
+```bash
+project-context --no-plan-gate --output context.md
+```
+
+**v1.8.1 fixes:** the `.txt` dependency-manifest detector previously flagged any plain-text file as a manifest on a bare word match; it now requires a real PEP 508 version specifier (with an unpinned-`requirements*.txt` name-based fallback). `--no-plan-gate` was a non-functional stub in v1.8.0 — it now actually suppresses the Step 1/Step 2 instructions in every output mode (`--format md`, `--format xml`, `--graph`) while keeping the baseline files intact.
+
+
 ## Benchmarking your own project
 
 The tool has a built-in benchmark command — you no longer need to run separate scripts:
@@ -133,6 +167,7 @@ This runs full, `--signatures-only`, `--graph` (and `--grep`, if provided) again
 Manual, single-mode runs are still available if you want the actual output file rather than just the metrics:
 
 ```bash
+project-context --version
 project-context --output full.md
 project-context --signatures-only --output sig.md
 project-context --grep "YourClassName" --output grep.md

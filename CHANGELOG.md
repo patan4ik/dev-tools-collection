@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.8.1] - 2026-07-28
+
+### Fixed
+- **`--no-plan-gate` was a non-functional stub.** In v1.8.0 the flag was parsed and stored on `Config` but never consulted by any renderer, so Step 1 (`ARCHITECTURE PLAN`) and Step 2 (`SELF-VALIDATION CHECKLIST`) still appeared in the output even with `--no-plan-gate` set. `render_markdown()`, `render_xml()`, and `render_graph()` now all guard the call to `render_preflight_plan_gate()` with `if not cfg.no_plan_gate:`, while still rendering `MANDATORY BASELINE FILES` unconditionally when baseline detection is enabled.
+- **False-positive `.txt` dependency-manifest detection.** The `DEPENDENCY_MANIFEST_SIGNATURES[".txt"]` regex matched any bare word on its own line (e.g. a `readme.txt` containing only `"hello"`), incorrectly classifying arbitrary prose files as dependency manifests. The pattern now requires a real PEP 508 version specifier token (`==`, `>=`, `<=`, `~=`, `!=`, `>`, `<` followed by a digit). An unpinned-requirement fallback (`UNPINNED_REQUIREMENTS_NAME_HINT`) recognizes `requirements*.txt`-style filenames containing only unpinned package names, per pip's own documented naming convention, used only when the content signature does not already match.
+- **`detect_dependency_files()` duplicated classification logic.** It previously ran its own copy of the manifest-signature check instead of calling `classify_file_role()`, risking drift between the `PROJECT CONVENTIONS DETECTED` section and the `MANDATORY BASELINE FILES` bundle. It now delegates to `classify_file_role()` so both stay consistent.
+
+### Changed
+- Version bumped to `1.8.1` (module docstring header and `VERSION` constant).
+
+## [1.8.0] - 2026-07-27
+
+### Added
+- **Role-based baseline file classification** (`classify_file_role`, `collect_mandatory_baseline`): replaces all hardcoded filename assumptions (`pyproject.toml`, `.pre-commit-config.yaml`, `.github/workflows`) with detection by content signature and by the owning tool's own fixed path convention. A dependency manifest is now recognized by its structural shape (`DEPENDENCY_MANIFEST_SIGNATURES`: `[project]`/`[tool.poetry]` for TOML, pinned-package lines for `.txt`, `[options]` for `.cfg`, a `dependencies:` key for YAML), a CI config by the CI provider's own path convention (`CI_CONFIG_PATH_PATTERNS`: GitHub Actions, GitLab CI, Azure Pipelines, Jenkins, CircleCI), and a pre-commit config by pytest's/pre-commit's own `repos:` schema. This means the tool now works correctly on any project regardless of what it happens to name its config files.
+- **AST/language-based test detection** (`is_test_module`, `_has_testcase_subclass`, `_has_pytest_decorator`, `_has_bare_assert`): a Python file is now classified as a test module using only stable, version-pinned facts of the Python language and its standard testing ecosystem — `import unittest`/`import pytest`, a class inheriting from `unittest.TestCase`, a function decorated with `pytest.fixture`/`pytest.mark.*`, or the presence of a bare `assert` statement. This completely replaces the previous `test_<name>.py` filename/`tests/` folder heuristic, so projects using `*_test.py`, co-located tests, or any other naming scheme are now detected correctly.
+- **pytest config-driven test root discovery** (`find_pytest_test_roots`): reads the `testpaths` key from whichever file pytest itself would read (`pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`) — this is pytest's own documented schema, not a project-specific convention — instead of assuming a folder is called `tests/`.
+- **`select_reference_test_file()`**: picks one real, representative test file (by AST-detected role, median length among candidates) and embeds it verbatim as a style/fixture/assertion-pattern exemplar, capped at `REFERENCE_TEST_MAX_CHARS` (4000 chars) to keep it cheap in every mode.
+- **`MANDATORY BASELINE FILES` section** (`render_baseline_section`): injects the verbatim content of the detected dependency manifest, CI config, pre-commit config, and reference test file into every output mode, including `--tree-only`, so the executor model reads the project's actual binding contracts instead of a paraphrase of them.
+- **Architecture Plan Gate** (`render_preflight_plan_gate`), a Plan-and-Solve style two-phase instruction block:
+  - **Step 1 (pre-flight plan)**: forces the executor to commit, in writing, to target module path, dependency-manifest diff, test file plan, applicable CI/lint/type/security gates, and version/security constraints — referencing the real baseline files — *before* generating any code.
+  - **Step 2 (self-validation checklist)**: forces the executor to re-read its own Step 1 plan after writing code and mark each item PASS/FAIL with a concrete artifact, so an incomplete implementation cannot be declared "done" silently.
+  - This exploits models' recency bias: a plan the model just wrote is harder to silently drop mid-generation than an instruction stated once, far away, near the top of a long context.
+- `--no-baseline` flag: disables both the `MANDATORY BASELINE FILES` bundle and the Architecture Plan Gate, for output that matches pre-1.8.0 behavior.
+- `--no-plan-gate` flag: keeps the verbatim baseline files but disables only the Step 1/Step 2 planning instructions, for cases where the caller wants ground-truth file content without the imperative planning wrapper.
+
+### Changed
+- `detect_test_pairs()` no longer relies on filename prefixes (`test_`) or folder names (`tests/`) to identify test files or link them to source modules; it now uses `is_test_module()` and reports `test_roots` sourced from pytest's own configuration instead of a hardcoded `pattern` string.
+- `detect_lint_config()` and `detect_dependency_files()` no longer look for a file literally named `pyproject.toml`; they scan all collected files and apply the same role/content-signature detection used by `collect_mandatory_baseline()`.
+- `detect_ci_requirements()` now recognizes CI configuration by `CI_CONFIG_PATH_PATTERNS` (multi-provider) instead of a single hardcoded `.github/workflows` substring check.
+- `render`, `render_markdown`, `render_xml`, `render_graph`, and `run_benchmark` all take new optional `baseline`/`reference_test` parameters so the mandatory baseline bundle and plan gate are threaded through every output mode consistently.
+- All source comments and user-facing CLI strings translated from Russian to English for consistent LLM-facing terminology and reduced token overhead when this file itself is fed into a model's context.
+
+### Rationale
+- Hardcoding contract filenames (as in `MANDATORY_BASELINE_FILES = {"pyproject.toml", "setup.cfg", ...}`) silently breaks on any project that names its manifest, CI config, or test files differently — which is the norm, not the exception, across real-world Python projects. Classifying files by the stable, version-pinned rules of the Python language and its tooling ecosystem (AST node types, `unittest`/`pytest` public API, each CI provider's own fixed path convention) generalizes correctly without per-project configuration.
+- The two-phase Plan-and-Solve structure (commit to a plan, then validate against that same plan) is a documented prompting pattern shown to reduce missing-step errors compared to asking a model to "just do it correctly," because it forces an explicit checkpoint before code generation and a second explicit checkpoint after, using the model's own stated plan as the object being validated.
+
 ## [1.7.0] - 2026-07-26
 
 ### Added

@@ -1,8 +1,8 @@
 """
 tests/test_project_context.py
 
-Tests for cli.py v1.7.0
-Run: pytest tests/cli.py -v
+Tests for cli.py v1.8.1
+Run: pytest tests/test_project_context.py -v
 """
 
 import re
@@ -28,7 +28,7 @@ def make_sample_project(tmp_path: Path) -> Path:
 
 def make_project_with_conventions(tmp_path: Path) -> Path:
     """Sample project with tests/, pyproject.toml with lint tools, a CI
-    workflow, and a documented, snake_case-styled module — used to exercise
+    workflow, and a documented, snake_case-styled module -- used to exercise
     detect_conventions() end to end."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "calc.py").write_text(
@@ -45,6 +45,9 @@ def make_project_with_conventions(tmp_path: Path) -> Path:
     (tmp_path / "tests" / "test_calc.py").write_text("def test_add():\n    assert True\n")
 
     (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "sample"\n'
+        'version = "0.1.0"\n\n'
         "[tool.black]\n"
         "line-length = 88\n\n"
         "[tool.ruff]\n"
@@ -69,6 +72,38 @@ def make_project_with_conventions(tmp_path: Path) -> Path:
     )
 
     (tmp_path / "requirements.txt").write_text("requests\n")
+    return tmp_path
+
+
+def make_project_with_nonstandard_names(tmp_path: Path) -> Path:
+    """Sample project that deliberately avoids every conventional filename
+    (no pyproject.toml, no tests/, no test_*.py, no .github/workflows) to
+    verify that v1.8's role/content-based detection does not depend on
+    hardcoded names."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "calc2.py").write_text("def multiply(a, b):\n    return a * b\n")
+
+    # Test module identified purely by AST signature (assert + pytest import),
+    # not by filename prefix or folder name.
+    (tmp_path / "lib" / "verify_calc2.py").write_text(
+        "import pytest\n\n"
+        "from lib.calc2 import multiply\n\n"
+        "def test_multiply():\n"
+        "    assert multiply(2, 3) == 6\n"
+    )
+
+    # Dependency manifest with a non-standard filename, recognized by its
+    # PEP 621 [project] content signature rather than by being named
+    # "pyproject.toml".
+    (tmp_path / "app_manifest.toml").write_text(
+        "[project]\n" 'name = "nonstandard"\n' 'version = "1.0"\n'
+    )
+
+    # CI config for a different provider, recognized by GitLab's own fixed
+    # path convention rather than assuming GitHub Actions.
+    (tmp_path / ".gitlab-ci.yml").write_text(
+        "test:\n" "  script:\n" "    - pytest --cov\n" "    - mypy lib\n"
+    )
     return tmp_path
 
 
@@ -224,7 +259,7 @@ def test_report_does_not_write_output_file(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# PROJECT CONVENTIONS DETECTED — v1.7.0
+# PROJECT CONVENTIONS DETECTED -- v1.7.0+
 # --------------------------------------------------------------------------- #
 
 
@@ -279,7 +314,11 @@ def test_conventions_detects_test_coverage_pairs(tmp_path):
     result = run_tool(tmp_path)
     assert "src/calc.py" in result.stdout
     assert "src/uncovered.py" in result.stdout
-    assert "tests/test_<module>.py" in result.stdout
+    # v1.8: test files are identified by AST signature, not by a hardcoded
+    # "tests/test_<module>.py" pattern string, so assert on the actually
+    # detected file path instead.
+    assert "tests/test_calc.py" in result.stdout
+    assert "by language-level signature, not filename" in result.stdout
 
 
 def test_conventions_detects_lint_tools(tmp_path):
@@ -316,7 +355,9 @@ def test_conventions_detects_naming_and_docstring_style(tmp_path):
 def test_conventions_no_ci_workflow_reports_none_detected(tmp_path):
     make_sample_project(tmp_path)
     result = run_tool(tmp_path)
-    assert "No CI workflow detected" in result.stdout
+    # v1.8 wording: "No CI configuration detected" (multi-provider phrasing),
+    # replacing the old GitHub-Actions-specific "No CI workflow detected".
+    assert "No CI configuration detected" in result.stdout
 
 
 def test_conventions_scoped_scan_still_sees_full_project(tmp_path):
@@ -331,5 +372,99 @@ def test_conventions_scoped_scan_still_sees_full_project(tmp_path):
 def test_conventions_xml_format_includes_section(tmp_path):
     make_sample_project(tmp_path)
     result = run_tool(tmp_path, "--format", "xml")
-    assert "<conventions>" in result.stdout
+    assert "<project_context>" in result.stdout
     assert "PROJECT CONVENTIONS DETECTED" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# MANDATORY BASELINE FILES + ARCHITECTURE PLAN GATE -- v1.8.1
+# --------------------------------------------------------------------------- #
+
+
+def test_baseline_section_present_by_default(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path)
+    assert "MANDATORY BASELINE FILES" in result.stdout
+    assert "[tool.black]" in result.stdout  # verbatim pyproject.toml content
+    assert "requests" in result.stdout  # verbatim requirements.txt content
+
+
+def test_baseline_section_absent_with_no_baseline_flag(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path, "--no-baseline")
+    assert "MANDATORY BASELINE FILES" not in result.stdout
+    assert "ARCHITECTURE PLAN" not in result.stdout
+
+
+def test_baseline_appears_in_tree_only_mode(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path, "--tree-only")
+    assert "MANDATORY BASELINE FILES" in result.stdout
+
+
+def test_plan_gate_present_by_default(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path)
+    assert "STEP 1" in result.stdout
+    assert "ARCHITECTURE PLAN" in result.stdout
+    assert "STEP 2" in result.stdout
+    assert "SELF-VALIDATION CHECKLIST" in result.stdout
+
+
+def test_plan_gate_absent_with_no_plan_gate_flag_but_baseline_kept(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path, "--no-plan-gate")
+    assert "MANDATORY BASELINE FILES" in result.stdout
+    assert "STEP 1" not in result.stdout
+    assert "SELF-VALIDATION CHECKLIST" not in result.stdout
+
+
+def test_reference_test_file_embedded_verbatim(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path)
+    assert "Reference test file" in result.stdout
+    assert "def test_add():" in result.stdout
+
+
+def test_baseline_reports_none_detected_when_project_is_empty(tmp_path):
+    (tmp_path / "readme.txt").write_text("hello\n")
+    result = run_tool(tmp_path)
+    assert "No baseline contract files or test exemplar were detected" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# ROLE/CONTENT-BASED DETECTION -- v1.8.1
+# (must work without relying on any hardcoded filename)
+# --------------------------------------------------------------------------- #
+
+
+def test_dependency_manifest_detected_by_content_not_filename(tmp_path):
+    make_project_with_nonstandard_names(tmp_path)
+    result = run_tool(tmp_path)
+    assert "app_manifest.toml" in result.stdout
+    assert "Dependency manifest" in result.stdout
+
+
+def test_ci_config_detected_for_non_github_provider(tmp_path):
+    make_project_with_nonstandard_names(tmp_path)
+    result = run_tool(tmp_path)
+    assert ".gitlab-ci.yml" in result.stdout
+    assert "pytest" in result.stdout
+    assert "mypy" in result.stdout
+
+
+def test_test_module_detected_without_conventional_naming(tmp_path):
+    """A file named verify_calc2.py, outside any 'tests/' folder, must
+    still be recognized as a test module purely from its AST signature
+    (pytest import + assert), proving detection is not filename/folder
+    based."""
+    make_project_with_nonstandard_names(tmp_path)
+    result = run_tool(tmp_path)
+    assert "verify_calc2.py" in result.stdout
+    assert "by language-level signature, not filename" in result.stdout
+
+
+def test_pytest_testpaths_respected(tmp_path):
+    make_project_with_conventions(tmp_path)
+    result = run_tool(tmp_path)
+    assert "pytest is configured to look for tests in" in result.stdout

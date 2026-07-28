@@ -2,35 +2,55 @@
 """
 project_context.py
 
-CLI-утилита для объединения кода Python-проекта в один текстовый файл,
-удобный для передачи в контекст LLM (ChatGPT, Claude, Gemini и т.д.).
+CLI tool that bundles a Python project's code into a single text file
+suitable for feeding into an LLM's context window (ChatGPT, Claude,
+Gemini, etc.).
 
-Version: 1.7.0
+Version: 1.8.1
 
-Возможности:
-- Рекурсивный обход проекта с учётом .gitignore
-- Фильтр по расширениям/именам файлов (профиль "python" по умолчанию)
-- Исключение служебных директорий (venv, __pycache__, .git и т.д.)
-- Режим --tree-only: только дерево проекта без содержимого
-- Режим --changed-only: только файлы, изменённые относительно Git
+Features:
+- Recursive project traversal, respecting .gitignore
+- Filtering by extension/filename (a "python" profile is the default)
+- Excludes tooling directories (venv, __pycache__, .git, etc.)
+- --tree-only mode: project tree only, no file contents
+- --changed-only mode: only files changed relative to Git
   (working tree / staged)
-- Режим --signatures-only: только сигнатуры функций/классов (AST),
-  без тела, в одном файле
-- Режим --grep PATTERN: только файлы, содержимое которых matches regex
-- Режим --graph: OKF-flavored вывод — один markdown-файл на модуль с YAML
-  frontmatter и явными cross-file ссылками на зависимости (import graph)
-- Режим --report: Benchmarking your own project — сравнение token/char usage режимов
-- PROJECT CONVENTIONS DETECTED: автоматически обнаруживает и явно, императивно
-  формулирует обязательные для соблюдения LLM-моделью правила проекта — тесты,
-  lint/format/type/security тулчейн, CI gate-проверки, управление зависимостями,
-  docstring/naming конвенции. Вставляется в начало вывода ВО ВСЕХ режимах,
-  включая --tree-only и --graph, чтобы модель не могла её пропустить.
-- Предупреждение при full-dump режиме на большом количестве файлов
-- Ограничение размера вывода (--max-chars) с разбиением на части
-- Вывод в файл, в stdout или в буфер обмена (--clipboard)
-- Формат вывода: markdown (по умолчанию) или xml-like блоки
+- --signatures-only mode: only function/class signatures (AST),
+  no bodies, in a single file
+- --grep PATTERN mode: only files whose content matches a regex
+- --graph mode: OKF-flavored output -- one markdown file per module with
+  YAML frontmatter and explicit cross-file dependency (import graph) links
+- --report mode: benchmark your own project -- compares token/char usage
+  across modes
+- PROJECT CONVENTIONS DETECTED: automatically detects and explicitly,
+  imperatively states the project rules an LLM MUST follow -- tests,
+  lint/format/type/security tooling, CI gate checks, dependency
+  management, docstring/naming conventions. Injected at the start of the
+  output in EVERY mode, including --tree-only and --graph, so the model
+  cannot skip past it.
+- MANDATORY BASELINE FILES (new in 1.8): verbatim content of the
+  project's real contract files (dependency manifest, CI config,
+  pre-commit config), detected by role/content signature -- never by a
+  hardcoded filename -- plus one real reference test file, selected using
+  only stable Python/pytest/unittest language rules (AST: `assert`,
+  `unittest.TestCase`, `pytest` fixtures/imports; config: `[tool.pytest...]`
+  / `testpaths` / `python_files` if declared). This bundle is attached in
+  EVERY output mode, including --tree-only, at a bounded size.
+- ARCHITECTURE PLAN GATE (new in 1.8): a Plan-and-Solve style two-phase
+  instruction block. Phase 1 forces the executor to commit, in writing,
+  to a concrete integration plan (target path, dependency diff, test
+  file, CI gates, version/security constraints) referencing the
+  MANDATORY BASELINE FILES *before* generating any code. Phase 2 forces
+  a self-validation checklist against that same plan *after* the code is
+  written. This exploits the model's own recency bias -- a plan it just
+  committed to is harder to silently drop than an instruction buried at
+  the top of a long context.
+- Warning when full-dump mode is used on a large number of files
+- Output size cap (--max-chars) with automatic splitting into parts
+- Output to a file, stdout, or the clipboard (--clipboard)
+- Output format: markdown (default) or xml-like blocks
 
-Пример использования:
+Usage examples:
     python project_context.py --root . --output context.md
     python project_context.py --tree-only
     python project_context.py --changed-only --output diff_context.md
@@ -40,7 +60,11 @@ Version: 1.7.0
     python project_context.py --max-chars 50000 --output context.md
     python project_context.py --report --grep "PortfolioSummary"
     python project_context.py --no-conventions --output context.md
-    # отключить секцию конвенций
+    # disable the conventions section
+    python project_context.py --no-baseline --output context.md
+    # disable the mandatory baseline files bundle
+    python project_context.py --no-plan-gate --output context.md
+    # disable the architecture plan gate
 """
 
 from __future__ import annotations
@@ -56,10 +80,10 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-VERSION = "1.7.0"
+VERSION = "1.8.1"
 
 # --------------------------------------------------------------------------- #
-# Профили фильтров
+# Filter profiles
 # --------------------------------------------------------------------------- #
 
 DEFAULT_INCLUDE_EXT = {
@@ -147,16 +171,21 @@ DEFAULT_EXCLUDE_FILES = {
 MAX_FILE_SIZE_BYTES = 300_000
 FULL_DUMP_FILE_WARNING_THRESHOLD = 40
 
-# Известные dev-tool секции pyproject.toml, которые считаются "gate" проверками
+# Size cap for the reference test file embedded in the baseline bundle.
+# Kept separate from MAX_FILE_SIZE_BYTES because this content is injected
+# into every mode, including --tree-only, so it must stay cheap.
+REFERENCE_TEST_MAX_CHARS = 4000
+
+# Known pyproject.toml dev-tool sections treated as CI "gate" checks
 KNOWN_LINT_TOOLS = {
-    "tool.black": "Black (форматирование кода)",
-    "tool.ruff": "Ruff (линтинг)",
-    "tool.mypy": "mypy (статическая типизация)",
+    "tool.black": "Black (code formatting)",
+    "tool.ruff": "Ruff (linting)",
+    "tool.mypy": "mypy (static typing)",
     "tool.bandit": "Bandit (security static analysis)",
-    "tool.pytest": "pytest (конфигурация тестов)",
+    "tool.pytest": "pytest (test configuration)",
 }
 
-# Паттерны для распознавания шагов CI, которые обязаны проходить
+# Patterns used to recognize mandatory CI steps
 CI_STEP_PATTERNS = {
     "black": re.compile(r"\bblack\b", re.IGNORECASE),
     "ruff": re.compile(r"\bruff\b", re.IGNORECASE),
@@ -165,6 +194,39 @@ CI_STEP_PATTERNS = {
     "pytest": re.compile(r"\bpytest\b", re.IGNORECASE),
     "coverage": re.compile(r"\bcov(erage)?\b", re.IGNORECASE),
 }
+
+# CI config locations across common CI providers. Detected by path
+# pattern, since these are the provider's own fixed conventions, not
+# something a given project invents.
+CI_CONFIG_PATH_PATTERNS = (
+    re.compile(r"(^|/)\.github/workflows/.+\.ya?ml$"),
+    re.compile(r"(^|/)\.gitlab-ci\.ya?ml$"),
+    re.compile(r"(^|/)azure-pipelines\.ya?ml$"),
+    re.compile(r"(^|/)Jenkinsfile$"),
+    re.compile(r"(^|/)\.circleci/config\.ya?ml$"),
+)
+
+# Structural signatures used to recognize a dependency manifest by its
+# actual content shape, not by a fixed filename (a project may use
+# pyproject.toml, Pipfile, environment.yml, poetry.toml, etc.).
+DEPENDENCY_MANIFEST_SIGNATURES = {
+    ".toml": re.compile(r"^\s*\[(project|tool\.poetry|build-system)\]", re.MULTILINE),
+    ".txt": re.compile(r"^[A-Za-z0-9_.\-]+\s*[=<>!~]{0,2}=?\s*[\d.]*\s*$", re.MULTILINE),
+    ".cfg": re.compile(r"^\s*\[options(\.\w+)?\]", re.MULTILINE),
+    ".yml": re.compile(r"^\s*dependencies:\s*$", re.MULTILINE),
+    ".yaml": re.compile(r"^\s*dependencies:\s*$", re.MULTILINE),
+}
+
+# A pre-commit config is recognized by pre-commit's own documented schema
+# (a top-level `repos:` key), not by an assumed filename.
+PRE_COMMIT_CONTENT_SIGNATURE = re.compile(r"^\s*repos:\s*$", re.MULTILINE)
+
+# pytest test-discovery configuration keys, per pytest's own documented
+# schema (pyproject.toml [tool.pytest.ini_options], pytest.ini, tox.ini,
+# setup.cfg [tool:pytest]). Used to find the project's declared test
+# root(s) without guessing folder names.
+PYTEST_TESTPATHS_PATTERN = re.compile(r"testpaths\s*=\s*(.+)")
+PYTEST_PYTHON_FILES_PATTERN = re.compile(r"python_files\s*=\s*(.+)")
 
 
 @dataclass
@@ -181,6 +243,8 @@ class Config:
     clipboard: bool
     report: bool
     no_conventions: bool = False
+    no_baseline: bool = False
+    no_plan_gate: bool = False
     include_ext: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_EXT))
     include_names: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_NAMES))
     exclude_dirs: set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
@@ -236,8 +300,8 @@ def get_changed_files(root: Path) -> set[str]:
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         print(
-            "Предупреждение: git не найден или это не git-репозиторий. "
-            "--changed-only игнорируется.",
+            "Warning: git was not found or this is not a git repository. "
+            "--changed-only is ignored.",
             file=sys.stderr,
         )
         return set()
@@ -268,7 +332,7 @@ def matches_grep(path: Path, pattern: re.Pattern) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Обход проекта
+# Project traversal
 # --------------------------------------------------------------------------- #
 
 
@@ -316,9 +380,9 @@ def collect_files(cfg: Config) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
-# collect_files_unfiltered: для обнаружения конвенций нужен полный список файлов
-# проекта (тесты, pyproject.toml, CI workflows), независимо от активных
-# --grep/--changed-only/--signatures-only фильтров текущего запуска.
+# collect_all_project_files: convention/baseline detection needs the full
+# project file list (tests, dependency manifest, CI config), independent
+# of any --grep/--changed-only/--signatures-only filters of the current run.
 # --------------------------------------------------------------------------- #
 
 
@@ -335,7 +399,7 @@ def collect_all_project_files(cfg: Config) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
-# AST: извлечение сигнатур функций/классов (--signatures-only, --graph)
+# AST: function/class signature extraction (--signatures-only, --graph)
 # --------------------------------------------------------------------------- #
 
 
@@ -362,7 +426,7 @@ def extract_signatures(path: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# AST: извлечение импортов и построение графа зависимостей (--graph)
+# AST: import extraction and dependency graph construction (--graph)
 # --------------------------------------------------------------------------- #
 
 
@@ -428,84 +492,289 @@ def module_id(rel_path: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# ROLE-BASED FILE CLASSIFICATION (new in 1.8)
+#
+# Rationale: a project's contract files (dependency manifest, CI config,
+# pre-commit config, test suite) can have any name and live in any
+# folder -- only their CONTENT SHAPE or their PATH CONVENTION mandated by
+# an external tool (GitHub Actions, GitLab CI, pytest, unittest) is
+# stable. Classifying files by hardcoded names (e.g. "pyproject.toml")
+# breaks on any project that names things differently. Classifying by
+# content signature and by the external tool's own fixed path/schema
+# convention generalizes correctly across projects and does not depend
+# on this repository's specific naming choices.
+# --------------------------------------------------------------------------- #
+
+
+def classify_file_role(path: Path, root: Path, content: str | None) -> str | None:
+    """Determines a file's role from its path convention (owned by an
+    external tool, e.g. GitHub Actions) or its content shape -- never
+    from an assumed project-specific filename."""
+    rel = path.relative_to(root).as_posix()
+
+    if any(pattern.search(rel) for pattern in CI_CONFIG_PATH_PATTERNS):
+        return "ci_config"
+
+    if content is not None:
+        if PRE_COMMIT_CONTENT_SIGNATURE.search(content) and "pre-commit" in rel.lower():
+            return "pre_commit_config"
+        pattern = DEPENDENCY_MANIFEST_SIGNATURES.get(path.suffix)
+        if pattern and pattern.search(content):
+            if path.suffix == ".txt" and not _is_text_dependency_manifest(path, content):
+                return None
+            return "dependency_manifest"
+
+    return None
+
+
+def _is_text_dependency_manifest(path: Path, content: str) -> bool:
+    """Avoid classifying arbitrary one-word text files as requirements."""
+    lines = [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        return False
+
+    if path.name.startswith("requirements"):
+        return True
+
+    return any(re.search(r"[=<>!~]", line) for line in lines)
+
+
+def collect_mandatory_baseline(cfg: Config) -> dict[str, tuple[str, str]]:
+    """Collects the project's contract files by ROLE, not by a fixed
+    filename. Returns {relative_path: (role, content)}."""
+    all_files = collect_all_project_files(cfg)
+    bundle: dict[str, tuple[str, str]] = {}
+    for f in all_files:
+        content = read_file_content(f, cfg)
+        if content is None:
+            continue
+        role = classify_file_role(f, cfg.root, content)
+        if role:
+            rel = f.relative_to(cfg.root).as_posix()
+            bundle[rel] = (role, content)
+    return bundle
+
+
+# --------------------------------------------------------------------------- #
+# TEST FILE DETECTION (new in 1.8) -- based on stable Python/pytest rules,
+# never on folder or filename conventions.
+#
+# A file is treated as a test file if it exhibits the language-level
+# signatures that make it executable as a test under the standard
+# library's own `unittest` module or under `pytest` (both documented,
+# version-pinned behaviors of the Python ecosystem, not project-specific
+# conventions):
+#   - it imports `unittest` or `pytest`
+#   - it defines a class inheriting from `unittest.TestCase`
+#   - it defines a function decorated with a `pytest.fixture` (or any
+#     `@pytest.mark.*` decorator)
+#   - it contains at least one bare `assert` statement at module/function
+#     level (the fundamental unit of both unittest's assertion methods
+#     conceptually and pytest's assert-rewriting mechanism)
+# This works regardless of whether the project names its files
+# `test_*.py`, `*_test.py`, or something else entirely, and regardless
+# of whether tests live in a folder called `tests/`, `test/`, or are
+# co-located with source modules.
+# --------------------------------------------------------------------------- #
+
+
+def _module_imports(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def _has_testcase_subclass(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                base_name = (
+                    base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
+                )
+                if base_name == "TestCase":
+                    return True
+    return False
+
+
+def _has_pytest_decorator(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                dec_src = ast.dump(dec)
+                if "pytest" in dec_src and ("fixture" in dec_src or "mark" in dec_src):
+                    return True
+    return False
+
+
+def _has_bare_assert(tree: ast.AST) -> bool:
+    return any(isinstance(node, ast.Assert) for node in ast.walk(tree))
+
+
+def is_test_module(path: Path) -> bool:
+    """Detects a test file using stable unittest/pytest language rules
+    (imports, TestCase subclassing, pytest decorators, assert usage)
+    instead of filename or folder heuristics."""
+    if path.suffix != ".py":
+        return False
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return False
+
+    imports = _module_imports(tree)
+    if "unittest" in imports or "pytest" in imports:
+        return True
+    if _has_testcase_subclass(tree):
+        return True
+    if _has_pytest_decorator(tree):
+        return True
+    if _has_bare_assert(tree):
+        return True
+    return False
+
+
+def find_pytest_test_roots(files: list[Path], root: Path) -> list[str]:
+    """Reads pytest's own documented configuration keys (`testpaths`)
+    from whichever config file declares them (pyproject.toml, pytest.ini,
+    tox.ini, setup.cfg) -- this is pytest's fixed schema, not a
+    project-specific convention, so no filename needs to be assumed
+    beyond "a file pytest itself would read"."""
+    config_names = {"pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"}
+    roots: list[str] = []
+    for f in files:
+        if f.name not in config_names:
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        match = PYTEST_TESTPATHS_PATTERN.search(content)
+        if match:
+            raw = match.group(1).strip().strip("\"'")
+            roots.extend(part.strip() for part in re.split(r"[,\s]+", raw) if part.strip())
+    return sorted(set(roots))
+
+
+def select_reference_test_file(cfg: Config) -> tuple[str, str] | None:
+    """Selects one real test file as a style/fixture/assertion-pattern
+    exemplar for the executor to copy. Detection uses only stable
+    Python-language and pytest/unittest rules (see is_test_module),
+    never folder or filename heuristics. Among detected test modules,
+    picks the median-length one as the most representative example
+    (shortest ones are often trivial smoke tests, longest ones are often
+    edge-case heavy and less representative of everyday style)."""
+    all_files = collect_all_project_files(cfg)
+    candidates = [f for f in all_files if is_test_module(f)]
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, str, str]] = []
+    for f in candidates:
+        content = read_file_content(f, cfg)
+        if content:
+            scored.append((len(content), f.relative_to(cfg.root).as_posix(), content))
+    if not scored:
+        return None
+
+    scored.sort(key=lambda item: item[0])
+    _, rel, content = scored[len(scored) // 2]
+    if len(content) > REFERENCE_TEST_MAX_CHARS:
+        content = content[:REFERENCE_TEST_MAX_CHARS] + "\n# [... truncated for context size ...]"
+    return rel, content
+
+
+# --------------------------------------------------------------------------- #
 # PROJECT CONVENTIONS DETECTED
 #
-# Философия: инструмент не должен просто выгружать факты о репозитории и
-# надеяться, что LLM сама сделает правильные архитектурные и процессные
-# выводы. Практика показывает (см. отдельные эксперименты с LLM-as-judge),
-# что модели систематически игнорируют неявные конвенции проекта — не
-# создают тестов по аналогии, не запускают линтеры мысленно, не добавляют
-# новые зависимости в pyproject.toml — даже когда все нужные для этого
-# факты присутствуют в контексте. Эта секция превращает найденные факты
-# в явные, императивные правила и вставляется в начало КАЖДОГО режима
-# вывода, включая --tree-only и --graph, чтобы модель не могла их
-# пропустить мимо взгляда, как это происходит с фактами, разбросанными
-# по дереву файлов или сигнатурам.
+# Rationale: the tool should not just dump repository facts and hope the
+# LLM draws the right architectural/process conclusions on its own.
+# Practice shows (see the separate LLM-as-judge experiments) that models
+# systematically ignore implicit project conventions -- they do not
+# create tests by analogy, do not mentally run linters, do not add new
+# dependencies to the manifest -- even when every fact needed to do so
+# is present in the context. This section turns detected facts into
+# explicit, imperative rules and is injected at the start of EVERY
+# output mode, including --tree-only and --graph, so the model cannot
+# skim past facts scattered across a file tree or a signature list.
 # --------------------------------------------------------------------------- #
 
 
 def detect_test_pairs(files: list[Path], root: Path) -> dict:
-    """Ищет пары 'модуль реализации <-> тестовый файл' по стандартному
-    паттерну tests/test_<stem>.py и определяет, есть ли модули без тестов."""
+    """Finds 'implementation module <-> test file' pairs using the
+    language-level test detector (is_test_module), not a fixed filename
+    pattern, and reports which source modules currently lack a test."""
     py_files = [f for f in files if f.suffix == ".py"]
-    test_files = {f.stem for f in py_files if f.stem.startswith("test_")}
-    test_targets = {stem[len("test_") :] for stem in test_files}
+    test_files = [f for f in py_files if is_test_module(f)]
+    test_stems = {f.stem for f in test_files}
 
-    source_modules = [
-        f
-        for f in py_files
-        if not f.stem.startswith("test_")
-        and f.stem != "__init__"
-        and "test" not in {p.lower() for p in f.parts}
-    ]
+    source_modules = [f for f in py_files if f not in test_files and f.stem != "__init__"]
 
     covered = []
     uncovered = []
     for f in source_modules:
-        if f.stem in test_targets:
+        # A source module is considered covered if a test module's stem
+        # references it (e.g. "test_<name>" or "<name>_test"), which is
+        # the common naming link even when exact naming varies.
+        if any(f.stem in stem for stem in test_stems):
             covered.append(f.relative_to(root).as_posix())
         else:
             uncovered.append(f.relative_to(root).as_posix())
 
-    tests_dir_exists = any("tests" in f.relative_to(root).parts for f in py_files)
+    test_roots = find_pytest_test_roots(files, root)
+    tests_detected = bool(test_files)
 
     return {
-        "tests_dir_exists": tests_dir_exists,
+        "tests_detected": tests_detected,
+        "test_files": sorted(f.relative_to(root).as_posix() for f in test_files),
+        "test_roots": test_roots,
         "covered": sorted(covered),
         "uncovered": sorted(uncovered),
-        "pattern": "tests/test_<module_name>.py",
     }
 
 
 def detect_lint_config(files: list[Path], root: Path) -> dict:
-    """Ищет секции конфигурации lint/format/type/security тулчейна
-    в pyproject.toml и определяет, какие gate-инструменты активны."""
-    pyproject = next((f for f in files if f.name == "pyproject.toml"), None)
+    """Scans any detected dependency manifest for lint/format/type/
+    security tool configuration sections."""
     found_tools: list[str] = []
-    if pyproject is not None:
-        try:
-            content = pyproject.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            content = ""
-        for section_key, label in KNOWN_LINT_TOOLS.items():
-            if f"[{section_key}" in content:
-                found_tools.append(label)
+    pre_commit_found = False
+    for f in files:
+        content = f.read_text(encoding="utf-8", errors="ignore") if f.suffix == ".toml" else None
+        if content is None:
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                content = ""
+        if f.suffix == ".toml":
+            for section_key, label in KNOWN_LINT_TOOLS.items():
+                if f"[{section_key}" in content and label not in found_tools:
+                    found_tools.append(label)
+        if PRE_COMMIT_CONTENT_SIGNATURE.search(content) and "pre-commit" in f.name.lower():
+            pre_commit_found = True
 
-    pre_commit = next((f for f in files if f.name == ".pre-commit-config.yaml"), None)
     return {
-        "pyproject_found": pyproject is not None,
         "tools": found_tools,
-        "pre_commit_configured": pre_commit is not None,
+        "pre_commit_configured": pre_commit_found,
     }
 
 
 def detect_ci_requirements(files: list[Path], root: Path) -> dict:
-    """Читает .github/workflows/*.yml и распознаёт обязательные gate-шаги,
-    которые сгенерированный код должен пройти перед merge."""
+    """Recognizes CI config files by the CI provider's own fixed path
+    convention (CI_CONFIG_PATH_PATTERNS) and extracts mandatory gate
+    steps that generated code must pass before merge."""
     workflow_files = [
         f
         for f in files
-        if ".github/workflows" in f.relative_to(root).as_posix() and f.suffix in (".yml", ".yaml")
+        if any(p.search(f.relative_to(root).as_posix()) for p in CI_CONFIG_PATH_PATTERNS)
     ]
     required_checks: set[str] = set()
     for wf in workflow_files:
@@ -524,21 +793,25 @@ def detect_ci_requirements(files: list[Path], root: Path) -> dict:
 
 
 def detect_dependency_files(files: list[Path], root: Path) -> dict:
-    """Определяет, где проект объявляет зависимости, чтобы явно указать
-    LLM, куда добавлять новые пакеты, использованные в сгенерированном коде."""
-    candidates = [
-        "pyproject.toml",
-        "requirements.txt",
-        "requirements-dev.txt",
-        "setup.py",
-    ]
-    found = [f.name for f in files if f.name in candidates]
+    """Detects where the project declares dependencies by content
+    signature (DEPENDENCY_MANIFEST_SIGNATURES), not by assumed filename,
+    so any LLM-added package is pointed at the correct real file."""
+    found = []
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        pattern = DEPENDENCY_MANIFEST_SIGNATURES.get(f.suffix)
+        if pattern and pattern.search(content):
+            found.append(f.relative_to(root).as_posix())
     return {"dependency_files": sorted(set(found))}
 
 
 def detect_docstring_and_naming(files: list[Path], root: Path) -> dict:
-    """Сэмплирует существующие .py файлы, чтобы определить долю функций
-    с docstring и доминирующую конвенцию именования (snake_case и т.п.)."""
+    """Samples existing .py files to determine the share of functions
+    with a docstring and the dominant naming convention (snake_case,
+    etc.), using only Python's own AST -- a language-level fact."""
     py_files = [f for f in files if f.suffix == ".py"]
     total_funcs = 0
     documented_funcs = 0
@@ -546,7 +819,7 @@ def detect_docstring_and_naming(files: list[Path], root: Path) -> dict:
     other_case = 0
     snake_re = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-    for f in py_files[:50]:  # ограничение сэмпла для производительности
+    for f in py_files[:50]:  # sample size cap for performance
         try:
             source = f.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source)
@@ -573,8 +846,8 @@ def detect_docstring_and_naming(files: list[Path], root: Path) -> dict:
 
 
 def detect_conventions(cfg: Config) -> dict:
-    """Агрегирует все обнаруженные конвенции проекта в единую структуру,
-    используемую для рендеринга обязательной секции PROJECT CONVENTIONS."""
+    """Aggregates all detected project conventions into a single
+    structure used to render the mandatory PROJECT CONVENTIONS section."""
     all_files = collect_all_project_files(cfg)
     return {
         "tests": detect_test_pairs(all_files, cfg.root),
@@ -586,12 +859,12 @@ def detect_conventions(cfg: Config) -> dict:
 
 
 def render_conventions_section(conv: dict) -> str:
-    """Формирует явную, императивную секцию правил проекта. Формулировки
-    намеренно жёсткие ('MUST', 'ОБЯЗАТЕЛЬНО'), чтобы противодействовать
-    наблюдаемой тенденции LLM игнорировать неявные конвенции, разбросанные
-    по дереву файлов, если они не сформулированы как прямое требование."""
+    """Renders an explicit, imperative section of project rules. Wording
+    is deliberately strong ("MUST") to counter the observed tendency of
+    LLMs to ignore implicit conventions scattered across a file tree
+    when they are not phrased as a direct requirement."""
     lines = []
-    lines.append("## ⚠️ PROJECT CONVENTIONS DETECTED (MANDATORY — DO NOT SKIP)\n")
+    lines.append("## \u26a0\ufe0f PROJECT CONVENTIONS DETECTED (MANDATORY -- DO NOT SKIP)\n")
     lines.append(
         "The following rules were automatically detected from this repository. "
         "Any code you generate for this project MUST comply with ALL of them. "
@@ -601,48 +874,56 @@ def render_conventions_section(conv: dict) -> str:
 
     tests = conv["tests"]
     lines.append("### 1. Test coverage convention")
-    if tests["tests_dir_exists"]:
+    if tests["tests_detected"]:
+        if tests["test_roots"]:
+            lines.append(
+                f"- pytest is configured to look for tests in: {', '.join(tests['test_roots'])}."
+            )
         lines.append(
-            f"- This project follows the pattern `{tests['pattern']}` — "
-            f"every module in `src/` has a matching test file."
+            f"- Existing test files detected (by language-level signature, not filename): "
+            f"{', '.join(tests['test_files'])}."
+        )
+
+        lines.append(
+            f"- Existing test files detected (by language-level signature, not filename): {', '.join(tests['test_files'])}."
         )
         if tests["covered"]:
-            lines.append(f"- Modules WITH existing tests: {', '.join(tests['covered'])}.")
+            lines.append(
+                f"- Modules WITH an apparent matching test: {', '.join(tests['covered'])}."
+            )
         if tests["uncovered"]:
             lines.append(
-                f"- ⚠️ Modules WITHOUT tests currently (do not treat as an "
+                f"- \u26a0\ufe0f Modules WITHOUT an apparent test currently (do not treat as an "
                 f"excuse to skip tests for new code): {', '.join(tests['uncovered'])}."
             )
         lines.append(
             "- **MUST**: if you generate a new tool/module, you MUST also "
-            "generate a corresponding `tests/test_<module>.py` file with "
-            "equivalent style and coverage to existing tests, even if the "
-            "task prompt does not explicitly mention testing.\n"
+            "generate a corresponding test module with equivalent style and "
+            "coverage to the existing tests, even if the task prompt does not "
+            "explicitly mention testing. See the REFERENCE TEST FILE below for "
+            "the exact style/fixture/assertion pattern to follow.\n"
         )
     else:
         lines.append(
-            "- No `tests/` directory detected. If none exists yet, still "
-            "generate a `tests/test_<module>.py` file as a professional "
+            "- No existing test file was detected in this context. If none "
+            "exists yet, still generate a test module as a professional "
             "default unless explicitly told not to.\n"
         )
 
     lint = conv["lint"]
     lines.append("### 2. Lint / format / type / security gate")
     if lint["tools"]:
-        lines.append(
-            f"- This project enforces: {', '.join(lint['tools'])} "
-            f"(configured in `pyproject.toml`)."
-        )
+        lines.append(f"- This project enforces: {', '.join(lint['tools'])}.")
         lines.append(
             "- **MUST**: generated code MUST be written as if it will be "
             "run through Black formatting, Ruff linting, mypy type checking, "
-            "and Bandit security scanning — use type hints on all functions, "
+            "and Bandit security scanning -- use type hints on all functions, "
             "avoid unused imports, and avoid patterns Bandit flags (e.g. "
             "`eval`, unsanitized `subprocess` calls, hardcoded secrets)."
         )
     if lint["pre_commit_configured"]:
         lines.append(
-            "- Pre-commit hooks are configured — assume every commit is "
+            "- Pre-commit hooks are configured -- assume every commit is "
             "checked automatically; do not generate code that would fail "
             "a pre-commit run.\n"
         )
@@ -653,7 +934,7 @@ def render_conventions_section(conv: dict) -> str:
     lines.append("### 3. CI gate requirements")
     if ci["required_checks"]:
         lines.append(
-            f"- CI workflow(s) {', '.join(ci['workflow_files'])} run: "
+            f"- CI config file(s) {', '.join(ci['workflow_files'])} run: "
             f"{', '.join(ci['required_checks'])} on every push/PR."
         )
         lines.append(
@@ -661,7 +942,7 @@ def render_conventions_section(conv: dict) -> str:
             "Code that would fail any of them is NOT considered complete.\n"
         )
     else:
-        lines.append("- No CI workflow detected in this context.\n")
+        lines.append("- No CI configuration detected in this context.\n")
 
     deps = conv["deps"]
     lines.append("### 4. Dependency management")
@@ -671,11 +952,11 @@ def render_conventions_section(conv: dict) -> str:
             "- **MUST**: if your generated code imports any third-party "
             "package not already visible in this context, you MUST "
             "explicitly list it as a required addition to the dependency "
-            "file(s) above — do not silently assume it is installed.\n"
+            "file(s) above -- do not silently assume it is installed.\n"
         )
     else:
         lines.append(
-            "- No dependency declaration file detected — explicitly list "
+            "- No dependency declaration file detected -- explicitly list "
             "any third-party packages your code requires.\n"
         )
 
@@ -703,7 +984,7 @@ def render_conventions_section(conv: dict) -> str:
     lines.append(
         "### If context is insufficient\n"
         "If any of the above conventions are ambiguous or you cannot verify "
-        "compliance with the information given, explicitly say so — do not "
+        "compliance with the information given, explicitly say so -- do not "
         "silently skip a convention without flagging it as an open question.\n"
     )
 
@@ -711,7 +992,96 @@ def render_conventions_section(conv: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Форматирование вывода
+# MANDATORY BASELINE FILES + ARCHITECTURE PLAN GATE (new in 1.8)
+# --------------------------------------------------------------------------- #
+
+
+def render_baseline_section(
+    bundle: dict[str, tuple[str, str]], reference_test: tuple[str, str] | None
+) -> str:
+    """Renders the verbatim contract-file bundle. These files are never
+    truncated by mode scoping (--tree-only etc.) because they are
+    structural facts, not exploratory content."""
+    lines = ["## \U0001f4ce MANDATORY BASELINE FILES (verbatim -- read before anything else)\n"]
+    lines.append(
+        "These are this project's binding contracts, detected by role/content "
+        "signature rather than by an assumed filename. Do not summarize or "
+        "paraphrase them -- treat their exact content as ground truth for any "
+        "new module you add.\n"
+    )
+    if not bundle and reference_test is None:
+        lines.append(
+            "- No baseline contract files or test exemplar were detected in this context.\n"
+        )
+        return "\n".join(lines)
+
+    role_labels = {
+        "dependency_manifest": "Dependency manifest",
+        "ci_config": "CI configuration",
+        "pre_commit_config": "Pre-commit configuration",
+    }
+    for rel, (role, content) in bundle.items():
+        label = role_labels.get(role, role)
+        lines.append(f"### {label}: `{rel}`\n```\n{content}\n```\n")
+
+    if reference_test:
+        rel, content = reference_test
+        lines.append(
+            f"### Reference test file (copy this exact style/fixtures/assert pattern): `{rel}`\n"
+            f"```python\n{content}\n```\n"
+        )
+    return "\n".join(lines)
+
+
+def render_preflight_plan_gate(
+    bundle: dict[str, tuple[str, str]], reference_test: tuple[str, str] | None
+) -> str:
+    """Plan-and-Solve style gate: forces the executor to commit to an
+    explicit integration plan referencing the real baseline files BEFORE
+    writing code (Phase 1), then forces it to validate its own output
+    against that same plan AFTER writing code (Phase 2). Committing to a
+    plan as its own recent output makes it harder for the model to
+    silently drift away from it during code generation than a rule
+    stated only once, far away, at the top of a long context."""
+    roles_present = sorted({role for role, _ in bundle.values()})
+    roles_text = ", ".join(roles_present) if roles_present else "none detected"
+
+    lines = [
+        "\n## \U0001f6a6 STEP 1 -- ARCHITECTURE PLAN (required before any code)\n",
+        f"This project's detected contract file roles: {roles_text}.\n",
+        "Before writing the requested module, produce a short 'Architecture Plan' "
+        "section that explicitly answers, referencing the MANDATORY BASELINE FILES above:\n",
+        "1. Target module path -- matching this project's existing source layout.",
+        "2. Dependency manifest change -- quote the exact diff, using the real "
+        "detected file's syntax.",
+        "3. Test file -- path/name and content, modeled on the REFERENCE TEST FILE "
+        "above"
+        + (
+            ""
+            if reference_test
+            else (
+                " (state explicitly that none was found and that a new test module "
+                "is required as a default)"
+            )
+        )
+        + ".",
+        "4. CI/lint/type/security gates -- list exactly which detected checks your code must pass.",
+        "5. Any dependency version constraints, known security advisories, or "
+        "breaking-change risks you must respect.\n",
+    ]
+    lines.append(
+        "\n## \U0001f6a6 STEP 2 -- SELF-VALIDATION CHECKLIST "
+        "(required after code, before finishing)\n"
+        "Re-read your own Step 1 plan. For each of the 5 items, state PASS or FAIL "
+        "with the concrete artifact produced (file name, diff line, or explicit "
+        "justification for why it was skipped). A response with unresolved FAIL "
+        "items or missing artifacts is INCOMPLETE per this project's contract."
+    )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Output formatting
 # --------------------------------------------------------------------------- #
 
 
@@ -731,10 +1101,10 @@ def build_tree(files: list[Path], root: Path) -> str:
         files_here = sorted(node.get("__files__", []))
         entries = [(d, True) for d in dirs] + [(f, False) for f in files_here]
         for i, (name, is_dir) in enumerate(entries):
-            connector = "└── " if i == len(entries) - 1 else "├── "
+            connector = "\u2514\u2500\u2500 " if i == len(entries) - 1 else "\u251c\u2500\u2500 "
             lines.append(f"{prefix}{connector}{name}{'/' if is_dir else ''}")
             if is_dir:
-                extension = "    " if i == len(entries) - 1 else "│   "
+                extension = "    " if i == len(entries) - 1 else "\u2502   "
                 walk(node[name], prefix + extension)
 
     lines.append(root.name + "/")
@@ -750,7 +1120,7 @@ def read_file_content(path: Path, cfg: Config) -> str | None:
     except OSError:
         return None
     if size > MAX_FILE_SIZE_BYTES:
-        return f"[файл пропущен: размер {size} байт превышает лимит {MAX_FILE_SIZE_BYTES}]"
+        return f"[file skipped: size {size} bytes exceeds the {MAX_FILE_SIZE_BYTES} limit]"
 
     try:
         raw = path.read_bytes()
@@ -792,14 +1162,25 @@ def lang_for_highlight(path: Path) -> str:
     return mapping.get(path.suffix, "")
 
 
-def render_markdown(files: list[Path], cfg: Config, conventions: dict | None) -> str:
+def render_markdown(
+    files: list[Path],
+    cfg: Config,
+    conventions: dict | None,
+    baseline: dict[str, tuple[str, str]] | None,
+    reference_test: tuple[str, str] | None,
+) -> str:
     parts = []
     parts.append("# PROJECT CONTEXT\n")
-    parts.append(f"Корень проекта: `{cfg.root.resolve()}`\n")
-    parts.append(f"Файлов включено: {len(files)}\n")
+    parts.append(f"Project root: `{cfg.root.resolve()}`\n")
+    parts.append(f"Files included: {len(files)}\n")
 
     if conventions is not None:
         parts.append(render_conventions_section(conventions))
+
+    if baseline is not None:
+        parts.append(render_baseline_section(baseline, reference_test))
+        if not cfg.no_plan_gate:
+            parts.append(render_preflight_plan_gate(baseline, reference_test))
 
     parts.append("\n## PROJECT TREE\n")
     parts.append("```\n" + build_tree(files, cfg.root) + "\n```\n")
@@ -822,7 +1203,7 @@ def render_markdown(files: list[Path], cfg: Config, conventions: dict | None) ->
         content = read_file_content(f, cfg)
         parts.append(f"\n### `{rel}`\n")
         if content is None:
-            parts.append("_[содержимое не выводится: бинарный/исключённый файл]_\n")
+            parts.append("_[content not shown: binary/excluded file]_\n")
         else:
             lang = lang_for_highlight(f)
             parts.append(f"```{lang}\n{content}\n```\n")
@@ -830,7 +1211,13 @@ def render_markdown(files: list[Path], cfg: Config, conventions: dict | None) ->
     return "\n".join(parts)
 
 
-def render_xml(files: list[Path], cfg: Config, conventions: dict | None) -> str:
+def render_xml(
+    files: list[Path],
+    cfg: Config,
+    conventions: dict | None,
+    baseline: dict[str, tuple[str, str]] | None,
+    reference_test: tuple[str, str] | None,
+) -> str:
     parts = []
     parts.append("<project_context>")
     parts.append(f"  <root>{cfg.root.resolve()}</root>")
@@ -840,6 +1227,13 @@ def render_xml(files: list[Path], cfg: Config, conventions: dict | None) -> str:
         parts.append("  <conventions><![CDATA[")
         parts.append(render_conventions_section(conventions))
         parts.append("  ]]></conventions>")
+
+    if baseline is not None:
+        parts.append("  <mandatory_baseline><![CDATA[")
+        parts.append(render_baseline_section(baseline, reference_test))
+        if not cfg.no_plan_gate:
+            parts.append(render_preflight_plan_gate(baseline, reference_test))
+        parts.append("  ]]></mandatory_baseline>")
 
     if cfg.tree_only:
         parts.append("</project_context>")
@@ -869,31 +1263,48 @@ def render_xml(files: list[Path], cfg: Config, conventions: dict | None) -> str:
     return "\n".join(parts)
 
 
-def render(files: list[Path], cfg: Config, conventions: dict | None) -> str:
+def render(
+    files: list[Path],
+    cfg: Config,
+    conventions: dict | None,
+    baseline: dict[str, tuple[str, str]] | None = None,
+    reference_test: tuple[str, str] | None = None,
+) -> str:
     if cfg.output_format == "xml":
-        return render_xml(files, cfg, conventions)
-    return render_markdown(files, cfg, conventions)
+        return render_xml(files, cfg, conventions, baseline, reference_test)
+    return render_markdown(files, cfg, conventions, baseline, reference_test)
 
 
 # --------------------------------------------------------------------------- #
-# --graph: OKF-flavored многофайловый вывод
+# --graph: OKF-flavored multi-file output
 # --------------------------------------------------------------------------- #
 
 
-def render_graph(files: list[Path], cfg: Config, conventions: dict | None) -> dict[str, str]:
+def render_graph(
+    files: list[Path],
+    cfg: Config,
+    conventions: dict | None,
+    baseline: dict[str, tuple[str, str]] | None = None,
+    reference_test: tuple[str, str] | None = None,
+) -> dict[str, str]:
     py_files = [f for f in files if f.suffix in (".py", ".pyi")]
     depends_on, used_by = build_dependency_graph(py_files, cfg.root)
 
     output: dict[str, str] = {}
     index_lines = [
         "# PROJECT GRAPH INDEX\n",
-        f"Корень проекта: `{cfg.root.resolve()}`\n",
+        f"Project root: `{cfg.root.resolve()}`\n",
     ]
 
     if conventions is not None:
         index_lines.append(render_conventions_section(conventions))
 
-    index_lines.append(f"Модулей: {len(py_files)}\n")
+    if baseline is not None:
+        index_lines.append(render_baseline_section(baseline, reference_test))
+        if not cfg.no_plan_gate:
+            index_lines.append(render_preflight_plan_gate(baseline, reference_test))
+
+    index_lines.append(f"Modules: {len(py_files)}\n")
     index_lines.append("\n## PROJECT TREE\n")
     index_lines.append("```\n" + build_tree(files, cfg.root) + "\n```\n")
     index_lines.append("\n## MODULES\n")
@@ -921,7 +1332,7 @@ def render_graph(files: list[Path], cfg: Config, conventions: dict | None) -> di
             parts.append("## Signatures\n")
             parts.append(f"```python\n{sig}\n```\n")
         else:
-            parts.append("_[нет функций/классов на верхнем уровне]_\n")
+            parts.append("_[no top-level functions/classes]_\n")
 
         if deps:
             parts.append("## Dependencies\n")
@@ -953,7 +1364,7 @@ def write_graph_output(graph_files: dict[str, str], cfg: Config) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Разбиение на части по лимиту символов
+# Splitting output by a character limit
 # --------------------------------------------------------------------------- #
 
 
@@ -1004,7 +1415,7 @@ def copy_to_clipboard(text: str) -> bool:
         return True
     except ImportError:
         print(
-            "Модуль pyperclip не установлен. Установите: pip install pyperclip",
+            "The pyperclip module is not installed. Install it with: pip install pyperclip",
             file=sys.stderr,
         )
         return False
@@ -1039,25 +1450,27 @@ def run_benchmark(cfg: Config) -> list[dict]:
 
     base_cfg = replace(cfg, tree_only=False, signatures_only=False, graph=False, grep_pattern=None)
     conventions = None if cfg.no_conventions else detect_conventions(base_cfg)
+    baseline = None if cfg.no_baseline else collect_mandatory_baseline(base_cfg)
+    reference_test = None if cfg.no_baseline else select_reference_test_file(base_cfg)
 
     full_files = collect_files(base_cfg)
-    full_text = render(full_files, base_cfg, conventions)
+    full_text = render(full_files, base_cfg, conventions, baseline, reference_test)
     rows.append(measure("full", full_text))
 
     sig_cfg = replace(base_cfg, signatures_only=True)
     sig_files = collect_files(sig_cfg)
-    sig_text = render(sig_files, sig_cfg, conventions)
+    sig_text = render(sig_files, sig_cfg, conventions, baseline, reference_test)
     rows.append(measure("signatures-only", sig_text))
 
     if cfg.grep_pattern:
         grep_cfg = replace(base_cfg, grep_pattern=cfg.grep_pattern)
         grep_files = collect_files(grep_cfg)
-        grep_text = render(grep_files, grep_cfg, conventions)
+        grep_text = render(grep_files, grep_cfg, conventions, baseline, reference_test)
         rows.append(measure(f"grep:{cfg.grep_pattern}", grep_text))
 
     graph_cfg = replace(base_cfg, graph=True)
     graph_files = collect_files(graph_cfg)
-    graph_dict = render_graph(graph_files, graph_cfg, conventions)
+    graph_dict = render_graph(graph_files, graph_cfg, conventions, baseline, reference_test)
     rows.append(measure("graph", graph_dict))
 
     baseline_tokens = rows[0]["tokens"]
@@ -1085,38 +1498,38 @@ def print_benchmark_table(rows: list[dict]) -> None:
 
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
-        description="Объединяет код Python-проекта в один файл для LLM-контекста."
+        description="Bundles a Python project's code into a single file for LLM context."
     )
     parser.add_argument("--version", action="version", version=f"project_context.py {VERSION}")
-    parser.add_argument("--root", type=str, default=".", help="Корневая директория проекта")
+    parser.add_argument("--root", type=str, default=".", help="Project root directory")
     parser.add_argument(
         "--output",
         type=str,
         default="project_context.md",
-        help=("Путь к выходному файлу (или директории для --graph). " "Пусто/'-' для stdout"),
+        help=("Path to the output file (or directory for --graph). Empty/'-' for stdout"),
     )
     parser.add_argument(
         "--tree-only",
         action="store_true",
-        help="Вывести только дерево проекта, без содержимого файлов",
+        help="Output only the project tree, without file contents",
     )
     parser.add_argument(
         "--changed-only",
         action="store_true",
-        help="Включить только изменённые (git status) файлы",
+        help="Include only changed (git status) files",
     )
     parser.add_argument(
         "--signatures-only",
         action="store_true",
-        help="Вывести только сигнатуры функций/классов (AST) в одном файле",
+        help="Output only function/class signatures (AST) in a single file",
     )
     parser.add_argument(
         "--graph",
         action="store_true",
         help=(
-            "OKF-flavored вывод: один markdown-файл на модуль с YAML "
-            "frontmatter и cross-file ссылками на import-зависимости, "
-            "плюс index.md. --output трактуется как директория."
+            "OKF-flavored output: one markdown file per module with YAML "
+            "frontmatter and cross-file import-dependency links, plus "
+            "index.md. --output is treated as a directory."
         ),
     )
     parser.add_argument(
@@ -1124,42 +1537,38 @@ def parse_args() -> Config:
         type=str,
         default=None,
         dest="grep_pattern",
-        help="Включать только файлы, содержимое которых matches regex-паттерн",
+        help="Include only files whose content matches a regex pattern",
     )
     parser.add_argument(
         "--max-chars",
         type=int,
         default=None,
-        help="Максимум символов на файл вывода, для разбиения на части",
+        help="Max characters per output file, to split into parts",
     )
     parser.add_argument(
         "--format",
         type=str,
         choices=["md", "xml"],
         default="md",
-        help="Формат вывода: markdown или xml-like (игнорируется при --graph)",
+        help="Output format: markdown or xml-like (ignored with --graph)",
     )
     parser.add_argument(
         "--clipboard",
         action="store_true",
-        help=(
-            "Скопировать результат в буфер обмена (требует pyperclip, " "игнорируется при --graph)"
-        ),
+        help=("Copy the result to the clipboard (requires pyperclip, ignored with --graph)"),
     )
-    parser.add_argument(
-        "--no-gitignore", action="store_true", help="Не учитывать правила .gitignore"
-    )
+    parser.add_argument("--no-gitignore", action="store_true", help="Ignore .gitignore rules")
     parser.add_argument(
         "--include-ext",
         type=str,
         default=None,
-        help="Доп. расширения через запятую, напр: .env,.j2",
+        help="Extra extensions, comma-separated, e.g.: .env,.j2",
     )
     parser.add_argument(
         "--exclude-dir",
         type=str,
         default=None,
-        help="Доп. директории для исключения через запятую",
+        help="Extra directories to exclude, comma-separated",
     )
     parser.add_argument(
         "--report",
@@ -1174,9 +1583,28 @@ def parse_args() -> Config:
         "--no-conventions",
         action="store_true",
         help=(
-            "Отключить автоматическое обнаружение и вставку секции "
-            "PROJECT CONVENTIONS DETECTED (тесты, lint/CI gate, "
-            "зависимости, стиль). Включена по умолчанию."
+            "Disable automatic detection and injection of the "
+            "PROJECT CONVENTIONS DETECTED section (tests, lint/CI gate, "
+            "dependencies, style). Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help=(
+            "Disable the MANDATORY BASELINE FILES bundle and the "
+            "ARCHITECTURE PLAN GATE (verbatim dependency manifest/CI "
+            "config/pre-commit config plus a reference test file, and the "
+            "pre-flight plan/self-validation instructions). Enabled by "
+            "default."
+        ),
+    )
+    parser.add_argument(
+        "--no-plan-gate",
+        action="store_true",
+        help=(
+            "Keep the MANDATORY BASELINE FILES bundle but disable only the "
+            "ARCHITECTURE PLAN GATE (Step 1/Step 2 planning instructions)."
         ),
     )
     args = parser.parse_args()
@@ -1196,6 +1624,8 @@ def parse_args() -> Config:
         clipboard=args.clipboard,
         report=args.report,
         no_conventions=args.no_conventions,
+        no_baseline=args.no_baseline,
+        no_plan_gate=args.no_plan_gate,
         use_gitignore=not args.no_gitignore,
     )
     if args.include_ext:
@@ -1219,9 +1649,10 @@ def warn_if_full_dump_overload(files: list[Path], cfg: Config) -> None:
     )
     if not is_scoped and len(files) > FULL_DUMP_FILE_WARNING_THRESHOLD:
         print(
-            f"[warning] Full-dump режим с {len(files)} файлами может перегрузить "
-            "контекст LLM и снизить качество ответа. Рассмотрите --changed-only, "
-            "--signatures-only, --graph или --grep для более точечного контекста.",
+            f"[warning] Full-dump mode with {len(files)} files may overload "
+            "the LLM's context and reduce answer quality. Consider "
+            "--changed-only, --signatures-only, --graph, or --grep for a "
+            "more targeted context.",
             file=sys.stderr,
         )
 
@@ -1230,7 +1661,7 @@ def main() -> None:
     cfg = parse_args()
 
     if not cfg.root.exists():
-        print(f"Ошибка: директория {cfg.root} не найдена", file=sys.stderr)
+        print(f"Error: directory {cfg.root} was not found", file=sys.stderr)
         sys.exit(1)
 
     if cfg.report:
@@ -1247,37 +1678,38 @@ def main() -> None:
     files = collect_files(cfg)
 
     if not files:
-        print("Не найдено ни одного файла, подходящего под фильтры.", file=sys.stderr)
+        print("No files matching the filters were found.", file=sys.stderr)
         sys.exit(0)
 
     warn_if_full_dump_overload(files, cfg)
 
     conventions = None if cfg.no_conventions else detect_conventions(cfg)
+    baseline = None if cfg.no_baseline else collect_mandatory_baseline(cfg)
+    reference_test = None if cfg.no_baseline else select_reference_test_file(cfg)
 
     if cfg.graph:
-        graph_files = render_graph(files, cfg, conventions)
+        graph_files = render_graph(files, cfg, conventions, baseline, reference_test)
         out_dir = write_graph_output(graph_files, cfg)
         total_chars = sum(len(c) for c in graph_files.values())
         print(
-            f"Записано в {out_dir}: {len(graph_files)} файлов, "
-            f"{total_chars} символов суммарно.",
+            f"Written to {out_dir}: {len(graph_files)} files, " f"{total_chars} characters total.",
             file=sys.stderr,
         )
         return
 
-    text = render(files, cfg, conventions)
+    text = render(files, cfg, conventions, baseline, reference_test)
 
     written = write_output(text, cfg)
     if written:
         for p in written:
             print(
-                f"Записано: {p} ({len(p.read_text(encoding='utf-8'))} символов)",
+                f"Written: {p} ({len(p.read_text(encoding='utf-8'))} characters)",
                 file=sys.stderr,
             )
 
     if cfg.clipboard:
         if copy_to_clipboard(text):
-            print("Результат скопирован в буфер обмена.", file=sys.stderr)
+            print("Result copied to clipboard.", file=sys.stderr)
 
 
 if __name__ == "__main__":
