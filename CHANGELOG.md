@@ -1,8 +1,88 @@
 # Changelog
 
+## [1.9.6] - 2026-08-07
+## Fixed
+Removed a byte-for-byte duplicate "All top-level signatures" block from the MANDATORY BASELINE FILES reference summary. It repeated ## SIGNATURES in --signatures-only mode and added no value elsewhere, and was the direct cause of --tree-only and --signatures-only output sizes converging.
+
+- `--tree-only` now renders a strictly minimal reference summary (module purpose + one representative function only, no import list), restoring the intended --tree-only < --signatures-only < full-dump size ordering.
+
+Fixed a malformed section heading in the reference summary.
+
+## [1.9.5] - 2026-08-05
+## Changed
+Replaced the raw, character-truncated reference source/test file dump (which routinely cut off mid-function or mid-docstring, wasting tokens on an unusable fragment) with a bounded KISS summary: module purpose (docstring's first paragraph), full import list, full signature list, and exactly one complete, never-truncated representative function.
+
+## Fixed
+Non-Python files (CHANGELOG.md, LICENSE.md, pyvenv.cfg, etc.) were being labeled [source] and tinted the same Mermaid color as real Python modules in the MODULE GRAPH. Added dedicated doc and other-config/other roles with their own neutral/mint styling.
+
+## [1.9.4] - 2026-08-03
+## Added
+Closed the GitDiagram-parity gap in --diagram: the module graph previously detected only imports and registers entry point edges. Added deterministic (AST/regex/local-git-derived, no LLM) detection for:
+
+- belongs to — nested __init__.py linked to its parent package's __init__.py.
+- documents — README.md linked to the nearest package __init__.py.
+- packages — pyproject.toml linked to the root package __init__.py.
+- validates — each test file linked individually to the source files its content actually references.
+
+runs / builds from / produces / publishes build — CI workflows linked to the tests they run and, for build/packaging workflows (pyinstaller, python -m build, twine, etc.), to pyproject.toml and a synthetic "Distribution / build artifact" node.
+
+invokes / imports — two synthetic actor nodes ("User / automation invoker", "External Python callers"), added only when a real target (a detected entry point, or a root package) exists.
+
+## Fixed
+Mermaid click links were being generated for synthetic nodes (actors, the "Distribution / build artifact" node) and pointed at nonexistent GitHub paths. Now restricted to real, on-disk repository files only.
+
+## [1.9.3] - 2026-08-02
+## Fixed
+- Config.diagram_mode was referenced but never declared on the dataclass, causing an immediate AttributeError on every run.
+- render_module_graph_text() / render_module_graph_mermaid() were called but never defined, causing a NameError.
+- detect_entry_points() was left truncated mid-function (a syntax error) in an earlier hand-edited draft; completed the full [project.scripts] (PEP 621) parser.
+
+Entry-point detection now strips a leading src/ path segment before building its dotted-module lookup, fixing silent zero-entry-point detection on any standard src-layout project.
+
+The ## MODULE GRAPH block is now wired into --format xml and --graph (index.md) as well as default markdown, instead of only one of the three output paths.
+
+## Added
+- **`--diagram {auto,none,text,mermaid} flag`** (default auto, resolving to text for --tree-only/--signatures-only and none otherwise), rendering the project's real import graph, detected entry points, and file roles as either plain text arrows or a styled Mermaid flowchart TD block — fully deterministic (AST + regex + local git metadata), no LLM call, no network access.
+
+## [1.9.2] - 2026-08-01 (draft, superseded by 1.9.3 fixes)
+## Added (incomplete in this revision — see 1.9.3)
+Initial attempt at GitDiagram-inspired module graph rendering for --tree-only: detect_entry_points(), render_module_graph_text()/_mermaid(). Shipped with several defects (missing Config field, undefined render functions, truncated entry-point parser) that were all fixed in 1.9.3.
+
+## [1.9.1] - 2026-07-30
+## Added
+- **`--baseline-mode {auto,full,summary,off} (default auto)`**: resolves to summary for --tree-only/--signatures-only and full otherwise. summary mode lists each MANDATORY BASELINE FILES contract file's role, path, and byte size instead of embedding it verbatim — the direct fix for --tree-only and --signatures-only output sizes having nearly converged in real-world use.
+
+- `--signatures-only` and `--graph` now also extract each module's top-level imports, module-level constants, and dataclass field definitions (still zero function/method bodies) — the most commonly requested missing piece of signature-only review.
+
+Real-time Written: <file> (<N> characters, ~<M> tokens, <method>) reporting on every run (using tiktoken when installed, a documented chars/4 fallback otherwise), replacing the previous character-only confirmation message.
+
+## Fixed
+A source module is now considered "covered" by a test if the test's content references it (import or literal path string), not just if the test filename happens to contain the source's stem as a substring — fixed a false "uncovered" flag on modules referenced only via a computed path (e.g. TOOL_PATH = Path(...) / "cli.py").
+
+Real per-project output (PROJECT TREE, then SIGNATURES where applicable) now renders immediately after the file count, before the PROJECT CONVENTIONS/MANDATORY BASELINE/ARCHITECTURE PLAN GATE instructional sections, not after them.
+
+## [1.9.0] - 2026-07-29
+
+### Added — Mandatory Reference Source Module, Integration Scope, Senior-Developer Mandate
+- **Mandatory reference source module**: one real, verbatim, non-test source file is now selected (preferring a module with `def main(` + `if __name__ == "__main__":`) and embedded in EVERY output mode, including `--tree-only` and `--signatures-only`. Root-cause fix for the blind-judge finding that tree/signature modes scored Actionability 1/5 — models could see *where* files live or *what* is callable, but never *how* the project actually writes error handling, CLI parsing, or docstrings. Bounded by `REFERENCE_SOURCE_MAX_CHARS` (6,000 chars) to preserve token savings in scoped modes.
+- **`--integration-scope {standalone,integrated}` flag** (default: `standalone`): removes guessing around whether a new module should be wired into existing entry points/CLI registries. `standalone` instructs the model not to touch existing wiring unless asked; `integrated` requires an explicit diff showing registration into the existing pattern.
+- **SENIOR-DEVELOPER MANDATE**: new instruction block preceding the Architecture Plan Gate that explicitly forbids the "zero-code refusal" failure mode observed in blind judging (a model responding with only clarifying questions and no implementation). "State missing context, do not guess" is now scoped strictly to details that would silently corrupt behavior — never to withholding an entire implementation.
+- **Documentation convention detection**: `detect_docs_convention()` finds README.md/CHANGELOG.md presence and observed changelog header format (e.g. Keep a Changelog style), added as category 6 of `PROJECT CONVENTIONS DETECTED`. Closes the "suggest updates for docs" gap.
+- **Dependency version-pinning style detection**: reports whether the manifest uses exact (`==`) or range (`>=`, `~=`) pins, so new dependencies added by the model follow the same discipline instead of being guessed.
+- **Definition of Done** self-validation gate expanded from 5 to 6 items (added "Documentation updates"), plus a mandatory self-reported `COMPLETION: N%` line for direct KPI tracking without manual judge estimation.
+- New `--report` row for `tree-only`, previously missing from the benchmark table.
+
+### Changed
+- Plan gate instructions now direct the model to reference baseline files by their short relative path, not by re-pasting any upload/storage URL — reduces citation noise that was hurting Coherence scores in blind evaluation.
+- `render_xml` now embeds the full rendered `PROJECT CONVENTIONS DETECTED` and `MANDATORY BASELINE FILES` text as CDATA blocks (`<conventions_detected>`, `<mandatory_baseline>`, `<architecture_plan_gate>`), fixing a regression where `--format xml` silently dropped this payload and only emitted boolean flags.
+- "No baseline contract files or test exemplar were detected" message updated to "No baseline contract files or code exemplars were detected", reflecting the new reference-source-module exemplar alongside the reference test file.
+
+### Known issue (tracked for v1.8.1)
+- `detect_dependency_files()` (used by the `PROJECT CONVENTIONS DETECTED` section) uses a looser `.txt` heuristic than `_is_text_dependency_manifest()` (used by the baseline bundle classifier), so a plain-word `.txt` file can be misclassified as a dependency manifest in the conventions section while correctly excluded from the baseline bundle. Fix planned: reuse `_is_text_dependency_manifest()` in both code paths.
+
 ## [1.8.1] - 2026-07-28
 
-### Fixed
+### Fixed — Baseline detection fixes
 - **`--no-plan-gate` was a non-functional stub.** In v1.8.0 the flag was parsed and stored on `Config` but never consulted by any renderer, so Step 1 (`ARCHITECTURE PLAN`) and Step 2 (`SELF-VALIDATION CHECKLIST`) still appeared in the output even with `--no-plan-gate` set. `render_markdown()`, `render_xml()`, and `render_graph()` now all guard the call to `render_preflight_plan_gate()` with `if not cfg.no_plan_gate:`, while still rendering `MANDATORY BASELINE FILES` unconditionally when baseline detection is enabled.
 - **False-positive `.txt` dependency-manifest detection.** The `DEPENDENCY_MANIFEST_SIGNATURES[".txt"]` regex matched any bare word on its own line (e.g. a `readme.txt` containing only `"hello"`), incorrectly classifying arbitrary prose files as dependency manifests. The pattern now requires a real PEP 508 version specifier token (`==`, `>=`, `<=`, `~=`, `!=`, `>`, `<` followed by a digit). An unpinned-requirement fallback (`UNPINNED_REQUIREMENTS_NAME_HINT`) recognizes `requirements*.txt`-style filenames containing only unpinned package names, per pip's own documented naming convention, used only when the content signature does not already match.
 - **`detect_dependency_files()` duplicated classification logic.** It previously ran its own copy of the manifest-signature check instead of calling `classify_file_role()`, risking drift between the `PROJECT CONVENTIONS DETECTED` section and the `MANDATORY BASELINE FILES` bundle. It now delegates to `classify_file_role()` so both stay consistent.

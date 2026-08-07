@@ -8,10 +8,12 @@ As of v1.6.0, this table is generated directly by the tool's built-in `--report`
 
 | Mode | Purpose | Chars | Tokens | Reduction vs. full | Smaller |
 |---|---|---|---|---|---|
-| `--report` full dump | Full tree + full file contents | 53,941 | 13,079 | baseline | 1.0x |
-| `--signatures-only` | Function/class signatures via AST, no bodies | 2,184 | 568 | 95.7% fewer | 23.0x |
-| `--graph` | OKF-flavored per-module files with dependency links | 3,027 | 812 | 93.8% fewer | 16.1x |
-| `--tree-only` | Architecture only, no file contents | not in `--report` | expect <1% of full dump | very low | — |
+| `--report` full dump | Full tree + full file contents | 205,609 | 48,790 | baseline | 1.0x |
+| `--tree-only` | Architecture only + minimal KISS code exemplar + module graph | 14,229 | 3,397 | 93.0% fewer | 14.4x |
+| `--signatures-only` | Function/class signatures via AST, no bodies, + module graph | 19,841 | 4,631 | 90.5% fewer | 10.5x |
+| `--graph` | OKF-flavored per-module files with dependency links | 19,251 | 4,472 | 90.8% fewer | 10.9x |
+
+**Note (v1.9.0/1.9.6):** every mode embeds a bounded KISS reference summary (module purpose + one complete, never-truncated representative function), not the raw file — this fixed an earlier issue where truncation cut a reference file off mid-function, wasting tokens on an unusable fragment. `--tree-only` uses a strictly minimal version of this summary (no import list) so it stays smaller than `--signatures-only`, which additionally lists every collected file's full signatures. Disable the whole baseline bundle with `--no-baseline` if you want the old, code-free lightweight behavior.
 
 Note on `--graph`: it costs more tokens than `--signatures-only`, because each module carries its own YAML frontmatter and dependency links. The tradeoff isn't token savings — it's navigability. Use it when you want to open one module and immediately see its exact dependencies without loading the entire signature map at once.
 
@@ -98,6 +100,19 @@ Keeping the baseline files (dependency manifest, CI config, reference test) but 
 project-context --no-plan-gate --output context.md
 ```
 
+Declaring that a new module must be wired into existing entry points/CLI registries, not left standalone (new in v1.9.0):
+```bash
+project-context --integration-scope integrated --output context.md
+```
+
+Adding a deterministic, GitDiagram-style architecture diagram to `--tree-only` or `--signatures-only` output — plain text arrows by default, or a Mermaid flowchart for GitHub/Markdown rendering:
+```bash
+project-context --tree-only --diagram text --output tree.md
+project-context --tree-only --diagram mermaid --output tree.md
+```
+
+Both are 100% deterministic (AST + regex + local git/CI-config parsing) — no LLM call, no network access, no GitHub API/token required. Detected relationships include `imports`, `registers entry point`, `belongs to`, `documents`, `packages`, `validates`, `runs`, `builds from`, `produces`, `publishes build`, and `invokes`. Disable with `--diagram none`.
+
 ## Recommended workflow
 
 1. Start a new AI conversation with `--tree-only` so the model understands the architecture first.
@@ -108,6 +123,7 @@ project-context --no-plan-gate --output context.md
 6. Reserve the unscoped full-dump mode for small projects or first-time full audits — expect the warning on repositories with 40+ files.
 7. Leave `PROJECT CONVENTIONS DETECTED` enabled by default for any code-generation task — it costs a small, fixed number of tokens per run and is the single change most likely to prevent an LLM from silently skipping your test suite, lint config, or dependency file.
 8. Leave `MANDATORY BASELINE FILES` and the `ARCHITECTURE PLAN GATE` enabled for any task that adds real code — the forced pre-commitment plan is the single change most likely to catch a missing test file or a silently-skipped dependency update before the model finishes responding. Use `--no-plan-gate` alone if you want the baseline facts without the two-phase planning overhead.
+9. Set `--integration-scope integrated` whenever the task explicitly requires wiring a new module into existing code (entry points, CLI registries, existing classes) — the default `standalone` scope tells the model to leave existing wiring untouched, which is the safer default for most "add a new tool" tasks but the wrong one for "add a new command to the existing CLI" tasks.
 
 ## PROJECT CONVENTIONS DETECTED (new in v1.7.0)
 
@@ -128,6 +144,8 @@ Disable this section — for example, to run a clean A/B baseline against an old
 ```bash
 project-context --no-conventions --output context.md
 ```
+6. **Set `--integration-scope integrated`** whenever the task explicitly requires wiring a new module into existing code...
+7. **Add `--diagram mermaid` to `--tree-only`** output when you want a paste-ready architecture diagram for a README, PR description, or design doc — it renders natively on GitHub. Use `--diagram text` (the default) when the output is only going to an LLM, since Mermaid's syntax overhead adds tokens an LLM doesn't need.
 
 ## MANDATORY BASELINE FILES + ARCHITECTURE PLAN GATE (new in v1.8.0, fixed in v1.8.1)
 
@@ -151,6 +169,77 @@ project-context --no-plan-gate --output context.md
 
 **v1.8.1 fixes:** the `.txt` dependency-manifest detector previously flagged any plain-text file as a manifest on a bare word match; it now requires a real PEP 508 version specifier (with an unpinned-`requirements*.txt` name-based fallback). `--no-plan-gate` was a non-functional stub in v1.8.0 — it now actually suppresses the Step 1/Step 2 instructions in every output mode (`--format md`, `--format xml`, `--graph`) while keeping the baseline files intact.
 
+## MANDATORY REFERENCE SOURCE MODULE + SENIOR-DEVELOPER MANDATE (new in v1.9.0)
+
+Blind LLM-judge evaluation of v1.8.1 across all four output modes surfaced a consistent failure mode in the lightweight modes: given only a file tree or a signature list — but no real implementation — executor models frequently responded with clarifying questions and zero code, scoring Actionability 1/5 despite otherwise-honest Calibration.
+
+v1.9.0 closes this gap with two changes that work together:
+
+- **Mandatory reference source module**: one real, bounded, verbatim non-test source file is now selected and embedded in every mode, including `--tree-only` and `--signatures-only`. Selection prefers a module that looks like a CLI entry point (`def main(` plus an `if __name__ == "__main__":` guard); otherwise it falls back to the median-length source module, using the same representativeness logic as the existing reference-test-file selector. This gives the model a concrete example of the project's actual error handling, argument-parsing style, and docstring conventions — not just a shape of what's callable.
+- **SENIOR-DEVELOPER MANDATE**: an explicit instruction block, injected immediately before the Architecture Plan Gate, that forbids responding with zero code. Ambiguous details must be resolved with a stated, reasonable assumption and an implementation delivered anyway; "insufficient context, do not guess" is now reserved strictly for details that would silently corrupt behavior (e.g. an unconfirmed business formula), never as grounds to withhold an entire response.
+
+A companion flag, `--integration-scope {standalone,integrated}` (default `standalone`), removes a second common source of guessing: whether a new module should be wired into the project's existing entry points/CLI registry. Set `integrated` when the task explicitly requires touching existing code; the plan gate will then demand an explicit registration diff rather than just a new file.
+
+Both additions are covered by the existing baseline toggle:
+```bash
+project-context --no-baseline --output context.md
+```
+
+## MODULE GRAPH / --diagram (new in v1.9.3, extended in v1.9.6)
+
+`--tree-only` and `--signatures-only` can render the project's real dependency and wiring structure as an architecture diagram, in the spirit of tools like [GitDiagram](https://gitdiagram.com/) — but computed entirely offline from AST, regex, and local git/CI-config parsing, with no LLM call and no GitHub API access.
+
+```bash
+project-context --tree-only --diagram text     # plain arrow list (default for --tree-only)
+project-context --tree-only --diagram mermaid  # Mermaid flowchart block
+project-context --diagram none                 # suppress the module graph entirely
+```
+
+Detected relationships: `imports` (real Python import edges), `registers entry point` (from `pyproject.toml`'s `[project.scripts]`), `belongs to` (package hierarchy), `documents` (README → package), `packages` (manifest → root package), `validates` (test → the source files it actually references), `runs`/`builds from`/`produces`/`publishes build` (CI workflow ↔ tests ↔ manifest ↔ build artifact), and `invokes`/`imports` for two synthetic actor nodes added only when a real target exists.
+
+Example Mermaid output for this repository:
+
+```mermaid
+flowchart TD
+  n__github_workflows_build_binaries_yml[".github/workflows/build-binaries.yml<br/>[ci]"]
+  n__github_workflows_tests_yml[".github/workflows/tests.yml<br/>[ci]"]
+  n_pyproject_toml["pyproject.toml<br/>[build-config]"]
+  n_src_dev_tools___init___py["src/dev_tools/__init__.py<br/>[package-init]"]
+  n_src_dev_tools_project_context___init___py["src/dev_tools/project_context/__init__.py<br/>[package-init]"]
+  n_src_dev_tools_project_context_cli_py["src/dev_tools/project_context/cli.py<br/>[source]"]
+  n_tests_test_project_context_py["tests/test_project_context.py<br/>[test]"]
+  n_Distribution___build_artifact["Distribution / build artifact<br/>[artifact]"]
+  n_User___automation_invoker(("User / automation invoker"))
+  n_External_Python_callers(("External Python callers"))
+  n_pyproject_toml -.->|"registers project-context"| n_src_dev_tools_project_context_cli_py
+  n_src_dev_tools_project_context___init___py -->|"belongs to"| n_src_dev_tools___init___py
+  n_pyproject_toml -->|"packages"| n_src_dev_tools___init___py
+  n_tests_test_project_context_py -->|"validates"| n_src_dev_tools_project_context_cli_py
+  n__github_workflows_build_binaries_yml -->|"builds from"| n_pyproject_toml
+  n_pyproject_toml -->|"produces"| n_Distribution___build_artifact
+  n__github_workflows_build_binaries_yml -->|"publishes build"| n_Distribution___build_artifact
+  n__github_workflows_tests_yml -->|"runs"| n_tests_test_project_context_py
+  n_User___automation_invoker -->|"invokes"| n_src_dev_tools_project_context_cli_py
+  n_External_Python_callers -->|"imports"| n_src_dev_tools___init___py
+  classDef toneBlue fill:#dbeafe,stroke:#2563eb,color:#172554
+  classDef toneAmber fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef toneMint fill:#dcfce7,stroke:#16a34a,color:#14532d
+  classDef toneNeutral fill:#f8fafc,stroke:#334155,color:#0f172a
+  class n__github_workflows_build_binaries_yml toneAmber
+  class n__github_workflows_tests_yml toneAmber
+  class n_pyproject_toml toneAmber
+  class n_src_dev_tools___init___py toneBlue
+  class n_src_dev_tools_project_context___init___py toneBlue
+  class n_src_dev_tools_project_context_cli_py toneBlue
+  class n_tests_test_project_context_py toneAmber
+  class n_Distribution___build_artifact toneAmber
+  class n_User___automation_invoker toneNeutral
+  class n_External_Python_callers toneNeutral
+```
+
+One capability is intentionally **not** reproduced: GitDiagram's LLM-generated semantic descriptions (e.g. turning `__init__.py` into "Project context API / feature package"). That requires summarizing README/docstrings — inference, not extraction — and was left out to avoid presenting a hallucinated label as a detected fact.
+
+`click` links to GitHub are added automatically when a `github.com` git remote is configured locally (no token, no API call) — synthetic nodes (actors, the "Distribution / build artifact" node) never get a link, since they aren't real repository paths.
 
 ## Benchmarking your own project
 
