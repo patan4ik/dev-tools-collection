@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.1] - 2026-08-11
+
+### Fixed
+- `VERSION` constant was left at `"2.0.0"` while the module docstring already read `Version: 2.0.1` — bumped to match, so `--version` output and the module header agree.
+- `--analysis` previously never called the full-dump overload check that every other mode already had, so a large cloned repository could silently produce a `tutorial_context.md` far beyond a typical chat UI's practical paste limit with no warning at all. `--analysis` now calls `warn_if_full_dump_overload()` exactly like the default full-dump mode.
+
+### Added
+- `--analysis <path>` now detects a `LICENSE`/`LICENSE.md`/`LICENSE.txt` file in the **target** project and, if found, prepends an explicit warning to the generated bundle: any tutorial content derived from that project's code is governed by *that project's* license terms, not this tool's MIT license and not PocketFlow's. This is a real, per-target risk (GPL share-alike obligations, proprietary/NDA'd code, etc.) that the tool can partially flag but never fully resolve — the warning exists so a user publishing a generated tutorial doesn't miss the question entirely.
+
+### Known gap (planned for 2.0.2, not yet in this release)
+- `--analysis` output still writes directly to the path given by `--output` (or the CLI default), not to a dedicated `<target>/project_context_output/` subfolder. Re-running `--analysis` against the same target repo without moving the prior output elsewhere risks the tool ingesting its own previous tutorial output as if it were source code on the next run. Do not run `--analysis` twice against the same target without manually relocating or deleting the prior output first.
+- The frozen `.exe` build does not yet prompt interactively for a target path when run with no arguments and no piped input; it currently requires explicit flags (`--root`, `--analysis`, etc.) every time.
+
+## [2.0.0] - 2026-08-10
+
+### Added — `--analysis` mode: deterministic tutorial-context generation for third-party repositories
+- **`--analysis <path>`**: points the tool's existing detection pipeline (PROJECT CONVENTIONS DETECTED, MANDATORY BASELINE FILES, module graph) at a *different*, already-cloned local repository instead of this tool's own `--root`, then appends a new `CANDIDATE ABSTRACTIONS` + `RELATIONSHIPS` + tutorial-writing instruction bundle. Inspired by [PocketFlow-Tutorial-Codebase-Knowledge](https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge) (MIT License), which performs the equivalent step via 4 sequential LLM calls inside its own tool. This mode makes **zero LLM calls itself** — the tool only prepares deterministic context; a human still pastes the output into their own LLM chat to do the actual writing. This preserves the project's founding design principle across every mode, including this new one.
+- `extract_file_abstractions()` / `select_candidate_abstractions()`: AST-derived candidate abstractions (top-level classes/functions), ranked by real docstring presence + import-usage count — a deterministic substitute for PocketFlow's `IdentifyAbstractions` LLM call.
+- `render_tutorial_bundle()`: renders the real import graph (already-built machinery shared with `--diagram`) as the relationship data, plus an attributed instruction block adapted from PocketFlow's own `OrderChapters`/`WriteChapters` prompt structure — explicitly reusing their prompt *shape*, not their code, and crediting the source project by name and license.
+- `--max-abstractions N` (default 10) and `--tutorial-language` flags to control the size and language of the `--analysis` bundle.
+
 ## [1.9.6] - 2026-08-07
 ## Fixed
 Removed a byte-for-byte duplicate "All top-level signatures" block from the MANDATORY BASELINE FILES reference summary. It repeated ## SIGNATURES in --signatures-only mode and added no value elsewhere, and was the direct cause of --tree-only and --signatures-only output sizes converging.

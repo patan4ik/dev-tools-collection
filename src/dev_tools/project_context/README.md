@@ -111,6 +111,15 @@ project-context --tree-only --diagram text --output tree.md
 project-context --tree-only --diagram mermaid --output tree.md
 ```
 
+Generating a deterministic, zero-LLM-call tutorial context bundle for a DIFFERENT, already-cloned repository — for writing beginner documentation with your own LLM chat:
+```bash
+git clone --depth 1 https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge
+project-context --analysis ./PocketFlow-Tutorial-Codebase-Knowledge --signatures-only --output preview.md
+project-context --analysis ./PocketFlow-Tutorial-Codebase-Knowledge --grep "FetchRepo|WriteChapters" --max-abstractions 8 --output tutorial_context.md
+```
+
+The first run is a cheap reconnaissance pass (signatures only, no full bodies) to see which files hold the highest-ranked abstractions. The second run scopes `--grep` to just those files, so the full-content bundle stays small enough for a typical chat UI's context window, even on a large target repository.
+
 Both are 100% deterministic (AST + regex + local git/CI-config parsing) — no LLM call, no network access, no GitHub API/token required. Detected relationships include `imports`, `registers entry point`, `belongs to`, `documents`, `packages`, `validates`, `runs`, `builds from`, `produces`, `publishes build`, and `invokes`. Disable with `--diagram none`.
 
 ## Recommended workflow
@@ -124,6 +133,8 @@ Both are 100% deterministic (AST + regex + local git/CI-config parsing) — no L
 7. Leave `PROJECT CONVENTIONS DETECTED` enabled by default for any code-generation task — it costs a small, fixed number of tokens per run and is the single change most likely to prevent an LLM from silently skipping your test suite, lint config, or dependency file.
 8. Leave `MANDATORY BASELINE FILES` and the `ARCHITECTURE PLAN GATE` enabled for any task that adds real code — the forced pre-commitment plan is the single change most likely to catch a missing test file or a silently-skipped dependency update before the model finishes responding. Use `--no-plan-gate` alone if you want the baseline facts without the two-phase planning overhead.
 9. Set `--integration-scope integrated` whenever the task explicitly requires wiring a new module into existing code (entry points, CLI registries, existing classes) — the default `standalone` scope tells the model to leave existing wiring untouched, which is the safer default for most "add a new tool" tasks but the wrong one for "add a new command to the existing CLI" tasks.
+10. Add `--diagram mermaid` to `--tree-only` output when you want a paste-ready architecture diagram for a README, PR description, or design doc — it renders natively on GitHub. Use `--diagram text` (the default) when the output is only going to an LLM, since Mermaid's syntax overhead adds tokens an LLM doesn't need.
+11. Use `--analysis <path>` only against repositories you have the right to extract and publish code from — check the target's own `LICENSE` file (now surfaced automatically in the output if present) before publishing any tutorial chapters derived from its code.
 
 ## PROJECT CONVENTIONS DETECTED (new in v1.7.0)
 
@@ -144,8 +155,6 @@ Disable this section — for example, to run a clean A/B baseline against an old
 ```bash
 project-context --no-conventions --output context.md
 ```
-6. **Set `--integration-scope integrated`** whenever the task explicitly requires wiring a new module into existing code...
-7. **Add `--diagram mermaid` to `--tree-only`** output when you want a paste-ready architecture diagram for a README, PR description, or design doc — it renders natively on GitHub. Use `--diagram text` (the default) when the output is only going to an LLM, since Mermaid's syntax overhead adds tokens an LLM doesn't need.
 
 ## MANDATORY BASELINE FILES + ARCHITECTURE PLAN GATE (new in v1.8.0, fixed in v1.8.1)
 
@@ -240,6 +249,32 @@ flowchart TD
 One capability is intentionally **not** reproduced: GitDiagram's LLM-generated semantic descriptions (e.g. turning `__init__.py` into "Project context API / feature package"). That requires summarizing README/docstrings — inference, not extraction — and was left out to avoid presenting a hallucinated label as a detected fact.
 
 `click` links to GitHub are added automatically when a `github.com` git remote is configured locally (no token, no API call) — synthetic nodes (actors, the "Distribution / build artifact" node) never get a link, since they aren't real repository paths.
+
+## --ANALYSIS: deterministic tutorial-writing context (new in v2.0.0)
+
+`--analysis <path>` points every existing detector at a *different* local repository (not this tool's own `--root`) and appends a `CANDIDATE ABSTRACTIONS` + `RELATIONSHIPS` bundle designed to feed a beginner-tutorial-writing LLM chat. It is inspired by [PocketFlow-Tutorial-Codebase-Knowledge](https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge) (MIT License), which performs the equivalent step via 4 sequential LLM calls inside its own tool — this mode reproduces the same output *shape* with **zero LLM calls**, preserving this project's core design principle: the tool prepares context, a human's own LLM chat does the reasoning.
+
+```bash
+project-context --analysis /path/to/cloned/other-repo --output tutorial_context.md --max-abstractions 8
+```
+
+- Candidate abstractions are ranked by real AST-extracted docstrings + import-usage count, not by an LLM's judgment — treat the ranking as a starting shortlist, not a final answer.
+- Relationships are the real import graph, already computed for `--diagram` — genuinely verified, not inferred.
+- If the target repository has its own `LICENSE` file, `--analysis` now surfaces it explicitly in the output: any tutorial content you publish using code extracted from that target is governed by *that project's* license, not this tool's MIT license.
+
+### Recommended prompt for chapter-by-chapter tutorial generation
+
+Paste this prompt first, then attach/paste the generated `tutorial_context.md`:
+
+> You are writing a beginner-friendly tutorial for the codebase described in the attached context. Ignore the `PROJECT CONVENTIONS DETECTED` and `MANDATORY BASELINE FILES` sections entirely — they exist for code-integration tasks, not tutorial writing. Use `FILE CONTENTS`/`SIGNATURES` as your only source of real code, and treat `CANDIDATE ABSTRACTIONS` as a shortlist to confirm or re-rank after reading the actual code, not a final answer.
+>
+> **Step 1** — propose your final chapter order (name, one-line reason, source file) and stop. Wait for me to approve or adjust before writing anything.
+>
+> **Step 2** — after I approve, write ONE chapter at a time, only when I explicitly ask for the next one. Each chapter: a clear heading, a concrete analogy, one real code snippet under 10 lines quoted verbatim from the context, a plain-English walkthrough, and a one-line transition to the next chapter.
+
+**Why one chapter per turn, not all at once:** most chat UIs cap the length of a single response well below their input context window. Asking for 8 full chapters in one reply risks silent truncation partway through — PocketFlow's own tool avoids this internally by calling its `WriteChapters` step once per chapter rather than once for the whole tutorial; the prompt above reproduces that same discipline manually.
+
+**Known limitation (tracked for v2.0.2):** `--analysis` output currently writes to wherever `--output` points (default: current directory) — it does not yet isolate itself into a dedicated subfolder under the target repo, and does not yet auto-exclude its own prior output from a second run against the same target. Move or delete `tutorial_context.md` before re-running `--analysis` against the same repository.
 
 ## Benchmarking your own project
 

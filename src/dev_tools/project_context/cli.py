@@ -6,45 +6,29 @@ CLI tool that bundles a Python project's code into a single text file
 suitable for feeding into an LLM's context window (ChatGPT, Claude,
 Gemini, etc.).
 
-Version: 1.9.6
+Version: 2.0.1
 
-NEW IN 1.9.6 (fixes real duplication/formatting issues found in
-production use of the 1.9.5 KISS reference summary):
-- REMOVED the "All top-level signatures" block from the KISS reference
-  summary entirely, in every mode. It was byte-for-byte duplicated by
-  the "## SIGNATURES" section in --signatures-only mode (making
-  --tree-only-with-reference and --signatures-only look nearly
-  identical), and was unnecessary bulk in every other mode where the
-  full file (or nothing) is shown elsewhere.
-- --tree-only now renders a MINIMAL reference summary: only the
-  module's one-line purpose plus ONE complete representative function
-  body -- no import list. This preserves the original fix for the
-  blind-judge "zero-code refusal" failure mode (--tree-only must still
-  show at least one real, complete code example) while remaining
-  clearly smaller than --signatures-only, which additionally shows the
-  full top-level import list and the full "## SIGNATURES" listing for
-  every collected file.
-- --signatures-only (and the default full-dump mode) keep the import
-  list in the KISS summary (it is NOT duplicated elsewhere -- neither
-  "## SIGNATURES" nor "## FILE CONTENTS" separately calls out imports)
-  plus the one representative function body.
-- Fixed a section-heading formatting bug: the reference summary title
-  previously rendered as "...(style exemplar: `path` (KISS summary --
-  not the full file)" -- two open parentheses, never properly closed.
-  Now renders as "...(style exemplar) -- KISS summary, not the full
-  file: `path`".
+NEW IN 2.0.0:
+- --analysis <path> mode: deterministically extracts candidate
+  "abstractions" (top-level classes/functions + real docstrings) and
+  their real import-graph relationships from a TARGET project (which
+  may be a different repository than the one project-context is
+  normally run against), then emits an attributed instruction block
+  asking a downstream LLM chat to order and write beginner-friendly
+  tutorial chapters. Inspired by PocketFlow-Tutorial-Codebase-Knowledge
+  (MIT License), which performs the equivalent step via 4 sequential
+  LLM calls inside its own tool. This mode makes ZERO LLM calls itself,
+  preserving this project's core design principle end to end.
+- v2.0.1: --analysis previously never warned on large targets, unlike
+  every other mode. A cloned repo can exceed a chat UI's paste/context
+  limit with no signal to the user before the file gets written.
 
-Mode-size ordering is now strictly:
-  --tree-only  <  --signatures-only  <  default full-dump
-which was the original design goal restated by the user after testing
-showed --tree-only and --signatures-only outputs had converged.
-
-Inherited from 1.9.5/1.9.4/1.9.3/1.9.0/1.8.x -- see CHANGELOG.md for
-the full history, including the GitDiagram-parity module graph edges
-(imports, registers entry point, belongs to, documents, packages,
-validates, runs, builds from, produces, publishes build, invokes),
-all 100% deterministic (AST + regex + local git/CI-config parsing),
-no LLM call, no network access.
+Inherited from 1.9.x/1.8.x -- see CHANGELOG.md for full history,
+including PROJECT CONVENTIONS DETECTED, MANDATORY BASELINE FILES,
+ARCHITECTURE PLAN GATE, and the GitDiagram-parity --diagram module
+graph (imports, registers entry point, belongs to, documents,
+packages, validates, runs, builds from, produces, publishes build,
+invokes) -- all 100% deterministic, no LLM call, no network access.
 """
 
 from __future__ import annotations
@@ -60,7 +44,7 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-VERSION = "1.9.6"
+VERSION = "2.0.1"
 
 DEFAULT_INCLUDE_EXT = {
     ".py",
@@ -220,6 +204,9 @@ class Config:
     no_conventions: bool = False
     no_baseline: bool = False
     no_plan_gate: bool = False
+    analysis_target: str | None = None
+    analysis_max_abstractions: int = 10
+    analysis_language: str = "english"
     include_ext: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_EXT))
     include_names: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_NAMES))
     exclude_dirs: set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
@@ -662,14 +649,6 @@ def _extract_representative_function(source: str) -> tuple[str, str] | None:
 def render_kiss_reference_summary(
     label: str, rel: str, content: str, include_imports: bool = True
 ) -> str:
-    """1.9.6: the 'All top-level signatures' block was removed entirely
-    -- it duplicated '## SIGNATURES' byte-for-byte in --signatures-only
-    mode, and added nothing of value elsewhere. include_imports=False
-    (used only by --tree-only) additionally drops the import list,
-    keeping --tree-only strictly smaller than --signatures-only, which
-    still shows the import list plus the full '## SIGNATURES' listing
-    for every collected file (not just this one representative file).
-    """
     doc = _module_docstring_first_paragraph(content)
     imports = _module_top_level_imports(content) if include_imports else []
 
@@ -1350,11 +1329,6 @@ def render_baseline_section(
     reference_source: tuple[str, str] | None = None,
     minimal_reference: bool = False,
 ) -> str:
-    """minimal_reference=True (used only by --tree-only) drops the
-    import-list block from the reference exemplars, keeping only the
-    module purpose line and one complete representative function --
-    strictly smaller than --signatures-only's reference summary, which
-    keeps the import list (see render_kiss_reference_summary)."""
     lines = ["## \U0001f4ce MANDATORY BASELINE FILES (verbatim -- read before anything else)\n"]
     lines.append(
         "These are this project's binding contracts and style exemplars, "
@@ -1478,7 +1452,7 @@ def render_preflight_plan_gate(
     lines.append(
         "\n## \U0001f6a6 STEP 2 -- SELF-VALIDATION CHECKLIST "
         "(required after code, before finishing)\n"
-        "Re-read your own Step 1 plan. For each of the 6 items, state PASS or FAIL "
+        "Re-read your own Step 1 plan. For each item, state PASS or FAIL "
         "with the concrete artifact produced (file name, diff line, or explicit "
         "justification for why it was skipped). A response with unresolved FAIL "
         "items or missing artifacts is INCOMPLETE per this project's contract.\n"
@@ -1827,14 +1801,14 @@ def write_output(text: str, cfg: Config) -> list[Path]:
             print(chunk)
         return written_paths
 
-    base = Path(cfg.output)
+    base_path = Path(cfg.output)
     if len(chunks) == 1:
-        base.write_text(text, encoding="utf-8")
-        written_paths.append(base)
+        base_path.write_text(text, encoding="utf-8")
+        written_paths.append(base_path)
     else:
-        stem, suffix = base.stem, base.suffix or ".md"
+        stem, suffix = base_path.stem, base_path.suffix or ".md"
         for i, chunk in enumerate(chunks, start=1):
-            part_path = base.with_name(f"{stem}_part{i}{suffix}")
+            part_path = base_path.with_name(f"{stem}_part{i}{suffix}")
             part_path.write_text(chunk, encoding="utf-8")
             written_paths.append(part_path)
 
@@ -1931,6 +1905,232 @@ def print_benchmark_table(rows: list[dict]) -> None:
         )
 
 
+# =========================================================================== #
+# --analysis MODE (new in v2.0)
+#
+# Rationale: inspired by PocketFlow-Tutorial-Codebase-Knowledge
+# (https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge,
+# MIT licensed), which crawls an arbitrary repo and uses 4 sequential LLM
+# calls (IdentifyAbstractions, AnalyzeRelationships, OrderChapters,
+# WriteChapters) to generate a beginner tutorial. This mode reproduces the
+# SAME OUTPUT SHAPE deterministically -- zero LLM calls inside this tool --
+# by using AST-extracted docstrings as abstraction descriptions and the
+# real import graph as the relationship data. The final section instructs
+# a human's own LLM chat to do only the ordering + writing steps, using
+# OUR verified facts as ground truth instead of the LLM re-guessing them.
+# This preserves the tool's core design principle (never call an LLM
+# itself) while producing the closest deterministic analogue of
+# PocketFlow's abstraction/relationship extraction stages.
+# =========================================================================== #
+
+ABSTRACTION_ATTRIBUTION = (
+    "Deterministic abstraction/relationship extraction below is inspired by "
+    "PocketFlow-Tutorial-Codebase-Knowledge "
+    "(https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge, "
+    "MIT License), which performs the equivalent step with 2 sequential LLM "
+    "calls. Here, abstraction descriptions come from real AST-extracted "
+    "docstrings and relationships come from the real import graph -- no LLM "
+    "call was made to produce this section."
+)
+
+
+def extract_file_abstractions(path: Path) -> list[dict]:
+    """Extracts top-level classes and functions with their docstrings from
+    one file -- the deterministic analogue of one file's contribution to
+    PocketFlow's IdentifyAbstractions LLM call."""
+    if path.suffix not in (".py", ".pyi"):
+        return []
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return []
+
+    found: list[dict] = []
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node)
+            description = (
+                " ".join(doc.strip().split("\n\n")[0].splitlines())
+                if doc
+                else "(no docstring available -- name only)"
+            )
+            kind = "class" if isinstance(node, ast.ClassDef) else "function"
+            found.append({"name": node.name, "description": description, "kind": kind})
+    return found
+
+
+def select_candidate_abstractions(
+    files: list[Path], root: Path, max_abstractions: int
+) -> list[dict]:
+    """Aggregates per-file abstractions across the target project and ranks
+    them -- the deterministic analogue of PocketFlow's IdentifyAbstractions
+    output (list of {"name", "description", "files"}). Ranking prefers
+    abstractions with a real docstring, then higher usage (import
+    in-degree) as an importance proxy."""
+    py_files = [f for f in files if f.suffix in (".py", ".pyi") and not is_test_module(f)]
+    _depends_on, used_by = build_dependency_graph(py_files, root)
+
+    candidates: dict[str, dict] = {}
+    for f in py_files:
+        rel = f.relative_to(root).as_posix()
+        usage_count = len(used_by.get(rel, []))
+        for item in extract_file_abstractions(f):
+            key = item["name"]
+            if key not in candidates:
+                candidates[key] = {
+                    "name": item["name"],
+                    "description": item["description"],
+                    "kind": item["kind"],
+                    "files": [rel],
+                    "has_docstring": item["description"] != "(no docstring available -- name only)",
+                    "usage_count": usage_count,
+                }
+            else:
+                candidates[key]["files"].append(rel)
+                candidates[key]["usage_count"] += usage_count
+
+    ranked = sorted(
+        candidates.values(),
+        key=lambda c: (c["has_docstring"], c["usage_count"]),
+        reverse=True,
+    )
+    return ranked[:max_abstractions]
+
+
+def render_tutorial_bundle(
+    files: list[Path],
+    root: Path,
+    project_name: str,
+    max_abstractions: int,
+    language: str,
+) -> str:
+    """Builds the full --analysis output: candidate abstractions, real
+    import relationships, and an attributed instruction block reusing
+    PocketFlow's actual OrderChapters/WriteChapters prompt structure
+    (MIT licensed), adapted to consume OUR deterministic facts as ground
+    truth instead of re-deriving them via an LLM call."""
+    py_files = [f for f in files if f.suffix in (".py", ".pyi")]
+    depends_on, _used_by = build_dependency_graph(py_files, root)
+    abstractions = select_candidate_abstractions(files, root, max_abstractions)
+
+    parts: list[str] = []
+    parts.append(f"# TUTORIAL CONTEXT: `{project_name}`\n")
+    target_license = next(
+        (f for f in files if f.name.upper() in ("LICENSE", "LICENSE.md", "LICENSE.txt")), None
+    )
+    if target_license:
+        parts.append(
+            f"_⚠️ This target project has its own license file: `{target_license.name}`. "
+            f"If you publish a tutorial containing code extracted from this project, "
+            f"that publication is governed by ITS license terms, not this tool's or "
+            f"PocketFlow's. Review `{target_license.name}` before publishing._\n"
+        )
+    parts.append(f"Analyzed root: `{root.resolve()}`\n")
+    parts.append(f"Files scanned: {len(files)} | Candidate abstractions: {len(abstractions)}\n")
+    parts.append(f"_{ABSTRACTION_ATTRIBUTION}_\n")
+
+    parts.append("\n## CANDIDATE ABSTRACTIONS\n")
+    for i, abst in enumerate(abstractions):
+        file_list = ", ".join(f"`{f}`" for f in sorted(set(abst["files"])))
+        parts.append(
+            f"{i}. **{abst['name']}** ({abst['kind']}) -- {abst['description']}\n"
+            f"   Files: {file_list} | Referenced by {abst['usage_count']} other module(s)\n"
+        )
+
+    parts.append("\n## RELATIONSHIPS (real import graph, not LLM-inferred)\n")
+    any_edges = False
+    for f in sorted(py_files, key=lambda p: p.relative_to(root).as_posix()):
+        rel = f.relative_to(root).as_posix()
+        for dep in depends_on.get(rel, []):
+            any_edges = True
+            parts.append(f"- `{rel}` --imports--> `{dep}`")
+    if not any_edges:
+        parts.append("- No cross-module imports detected.")
+
+    parts.append(
+        "\n## INSTRUCTIONS FOR THE TUTORIAL-WRITING LLM\n"
+        "_The following two steps are adapted from PocketFlow-Tutorial-Codebase-Knowledge's "
+        "OrderChapters and WriteChapters prompts (MIT License), modified to consume the "
+        "CANDIDATE ABSTRACTIONS and RELATIONSHIPS above as verified ground truth instead "
+        "of re-deriving them from raw code._\n"
+    )
+    parts.append(
+        f"**Step 1 -- Order the chapters.** Given the abstractions and relationships above for "
+        f"`{project_name}`, decide the best order to explain them, from first to last. "
+        f"Prefer foundational/user-facing concepts first, then lower-level implementation "
+        f"details. Output a numbered list of abstraction names in your chosen order.\n"
+    )
+    parts.append(
+        f"**Step 2 -- Write one beginner-friendly chapter per abstraction, in {language}.** "
+        "For each chapter: start with a clear heading; explain what problem the abstraction "
+        "solves with a concrete use case; keep code blocks under 10 lines each with a "
+        "beginner-friendly explanation after each one; use a simple diagram (mermaid) for any "
+        "non-trivial internal flow; link to other chapters by name where relevant; end with a "
+        "brief summary and a transition to the next chapter. Use the REFERENCE SOURCE MODULE "
+        "and PROJECT CONVENTIONS sections elsewhere in this context (if present) to match the "
+        "target project's real coding style in any code examples you write.\n"
+    )
+
+    return "\n".join(parts)
+
+
+def run_analysis_mode(cfg: Config) -> str:
+    """Entry point for --analysis: builds a Config pointed at the target
+    project (not cfg.root) and runs the full existing detection pipeline
+    (conventions, baseline, module graph) against it, then appends the
+    deterministic tutorial bundle. Reuses every existing detector as-is --
+    the target project gets the SAME rigor as the tool's own project."""
+    target_root = Path(cfg.analysis_target).expanduser().resolve()
+    if not target_root.exists() or not target_root.is_dir():
+        print(
+            f"Error: --analysis target does not exist or is not a directory: {target_root}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    target_cfg = replace(cfg, root=target_root, analysis_target=None)
+    files = collect_files(target_cfg)
+    if not files:
+        print(f"No files matching the filters were found under: {target_root}", file=sys.stderr)
+        sys.exit(0)
+    warn_if_full_dump_overload(files, target_cfg)
+
+    project_name = target_root.name
+    conventions = None if cfg.no_conventions else detect_conventions(target_cfg)
+    baseline = None if cfg.no_baseline else collect_mandatory_baseline(target_cfg)
+    reference_test = None if cfg.no_baseline else select_reference_test_file(target_cfg)
+    reference_source = None if cfg.no_baseline else select_reference_source_file(target_cfg)
+
+    parts = [
+        render_markdown(files, target_cfg, conventions, baseline, reference_test, reference_source)
+    ]
+    parts.append(
+        render_tutorial_bundle(
+            files, target_root, project_name, cfg.analysis_max_abstractions, cfg.analysis_language
+        )
+    )
+    return "\n\n".join(parts)
+
+
+def warn_if_full_dump_overload(files: list[Path], cfg: Config) -> None:
+    is_scoped = (
+        cfg.tree_only
+        or cfg.changed_only
+        or cfg.signatures_only
+        or cfg.graph
+        or cfg.grep_pattern is not None
+    )
+    if not is_scoped and len(files) > FULL_DUMP_FILE_WARNING_THRESHOLD:
+        print(
+            f"[warning] Full-dump mode with {len(files)} files may overload "
+            "the LLM's context and reduce answer quality. Consider "
+            "--changed-only, --signatures-only, --graph, or --grep for a "
+            "more targeted context.",
+            file=sys.stderr,
+        )
+
+
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         description="Bundles a Python project's code into a single file for LLM context."
@@ -1959,11 +2159,7 @@ def parse_args() -> Config:
     parser.add_argument(
         "--graph",
         action="store_true",
-        help=(
-            "OKF-flavored output: one markdown file per module with YAML "
-            "frontmatter and cross-file import-dependency links, plus "
-            "index.md. --output is treated as a directory."
-        ),
+        help="OKF-flavored output: one markdown file per module with YAML frontmatter and cross-file import-dependency links, plus index.md. --output is treated as a directory.",
     )
     parser.add_argument(
         "--grep",
@@ -2006,23 +2202,14 @@ def parse_args() -> Config:
     parser.add_argument(
         "--report",
         action="store_true",
-        help=(
-            "Run full, tree-only, signatures-only, graph (and grep, if --grep "
-            "is set) modes against the same root and print a token/character "
-            "comparison table using tiktoken (cl100k_base)."
-        ),
+        help="Run full, tree-only, signatures-only, graph (and grep, if --grep is set) modes against the same root and print a token/character comparison table using tiktoken (cl100k_base).",
     )
     parser.add_argument(
         "--integration-scope",
         type=str,
         choices=list(INTEGRATION_SCOPES),
         default="standalone",
-        help=(
-            "'standalone' (default): the requested task is a new, independent "
-            "module -- do not touch existing wiring. 'integrated': the task "
-            "REQUIRES wiring into the existing entry points/CLI registry, and "
-            "the plan gate will demand an explicit diff for it."
-        ),
+        help="'standalone' (default): new independent module. 'integrated': task REQUIRES wiring into existing entry points/CLI registry.",
     )
     parser.add_argument(
         "--diagram",
@@ -2030,38 +2217,51 @@ def parse_args() -> Config:
         choices=list(DIAGRAM_MODES),
         default="auto",
         dest="diagram_mode",
-        help=(
-            "'auto' (default): 'text' module-graph edges for --tree-only and "
-            "--signatures-only, 'none' otherwise. 'none': never render a "
-            "module graph. 'text': always render deterministic text-arrow "
-            "edges below PROJECT TREE. 'mermaid': same edges as a Mermaid "
-            "flowchart, with 'click' links if a github.com git remote is "
-            "configured locally. Fully deterministic, no LLM call."
-        ),
+        help="'auto' (default): 'text' for --tree-only/--signatures-only, 'none' otherwise. 'text'/'mermaid'/'none' force a specific mode.",
     )
     parser.add_argument(
         "--no-conventions",
         action="store_true",
-        help=(
-            "Disable automatic detection and injection of the "
-            "PROJECT CONVENTIONS DETECTED section. Enabled by default."
-        ),
+        help="Disable the PROJECT CONVENTIONS DETECTED section. Enabled by default.",
     )
     parser.add_argument(
         "--no-baseline",
         action="store_true",
-        help=(
-            "Disable the MANDATORY BASELINE FILES bundle and the "
-            "ARCHITECTURE PLAN GATE entirely. Enabled by default."
-        ),
+        help="Disable the MANDATORY BASELINE FILES bundle and the ARCHITECTURE PLAN GATE entirely. Enabled by default.",
     )
     parser.add_argument(
         "--no-plan-gate",
         action="store_true",
+        help="Keep the MANDATORY BASELINE FILES bundle but disable only the ARCHITECTURE PLAN GATE.",
+    )
+    parser.add_argument(
+        "--analysis",
+        type=str,
+        default=None,
+        dest="analysis_target",
         help=(
-            "Keep the MANDATORY BASELINE FILES bundle but disable only the "
-            "ARCHITECTURE PLAN GATE (Step 1/Step 2 planning instructions)."
+            "NEW in 2.0.0. Path to a DIFFERENT, already-cloned local repository to analyze "
+            "(not this tool's own --root). Runs the full PROJECT CONVENTIONS / MANDATORY "
+            "BASELINE / module graph pipeline against that target, then appends a "
+            "deterministic 'candidate abstractions + relationships' bundle (inspired by "
+            "PocketFlow-Tutorial-Codebase-Knowledge, MIT License) plus an instruction block "
+            "for a downstream LLM chat to order and write beginner tutorial chapters. "
+            "Makes ZERO LLM calls itself -- you still paste the output into a chat."
         ),
+    )
+    parser.add_argument(
+        "--max-abstractions",
+        type=int,
+        default=10,
+        dest="analysis_max_abstractions",
+        help="Max candidate abstractions to include in --analysis output (default: 10).",
+    )
+    parser.add_argument(
+        "--tutorial-language",
+        type=str,
+        default="english",
+        dest="analysis_language",
+        help="Language instruction embedded in the --analysis tutorial-writing prompt (default: english).",
     )
     args = parser.parse_args()
 
@@ -2084,6 +2284,9 @@ def parse_args() -> Config:
         no_conventions=args.no_conventions,
         no_baseline=args.no_baseline,
         no_plan_gate=args.no_plan_gate,
+        analysis_target=args.analysis_target,
+        analysis_max_abstractions=args.analysis_max_abstractions,
+        analysis_language=args.analysis_language,
         use_gitignore=not args.no_gitignore,
     )
 
@@ -2096,24 +2299,6 @@ def parse_args() -> Config:
         cfg.output = "project_graph"
 
     return cfg
-
-
-def warn_if_full_dump_overload(files: list[Path], cfg: Config) -> None:
-    is_scoped = (
-        cfg.tree_only
-        or cfg.changed_only
-        or cfg.signatures_only
-        or cfg.graph
-        or cfg.grep_pattern is not None
-    )
-    if not is_scoped and len(files) > FULL_DUMP_FILE_WARNING_THRESHOLD:
-        print(
-            f"[warning] Full-dump mode with {len(files)} files may overload "
-            "the LLM's context and reduce answer quality. Consider "
-            "--changed-only, --signatures-only, --graph, or --grep for a "
-            "more targeted context.",
-            file=sys.stderr,
-        )
 
 
 def main() -> None:
@@ -2129,6 +2314,22 @@ def main() -> None:
             sys.exit(1)
         rows = run_benchmark(cfg)
         print_benchmark_table(rows)
+        return
+
+    if cfg.analysis_target:
+        text = run_analysis_mode(cfg)
+        written = write_output(text, cfg)
+        if written:
+            for p in written:
+                written_text = p.read_text(encoding="utf-8")
+                tok_count, method = estimate_tokens(written_text)
+                print(
+                    f"Written: {p} ({len(written_text)} characters, ~{tok_count} tokens, {method})",
+                    file=sys.stderr,
+                )
+        if cfg.clipboard:
+            if copy_to_clipboard(text):
+                print("Result copied to clipboard.", file=sys.stderr)
         return
 
     files = collect_files(cfg)
