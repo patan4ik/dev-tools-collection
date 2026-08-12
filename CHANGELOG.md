@@ -1,5 +1,50 @@
 # Changelog
 
+# [Unreleased] — Roadmap checkpoint (updated)
+- Revised: v3.0 is now a standalone Windows desktop UI (tkinter, no new dependency, reuses the existing pyinstaller build pipeline), and multi-language support is deferred to v4.0. Rationale: a GUI expands the tool's reachable audience (non-CLI users) before investing in broader language coverage, and does not require or block the language-adapter architecture work.
+
+- Decision record: multi-language support path (still applies, now targeted at v4.0)
+Evaluated native-per-language rewrite vs. single core + pluggable tree-sitter adapters. Accepted: single core + adapters, matching SonarQube's and tree-sitter-based polyglot analyzers' precedent. Full rationale unchanged from the prior entry — see README.md Roadmap section. VB.NET grammar immaturity remains a known constraint.
+
+- project-context currently understands Python only — every semantic detector (extract_signatures, build_dependency_graph, is_test_module, entry-point detection) is built on Python's ast module. v3.0 will add Java, C, and C++ support (VB.NET pending grammar maturity) via a pluggable language-adapter architecture on top of tree-sitter, not a per-language native rewrite.
+
+- Why not rewrite natively per language: analyzing a language's source text does not require the analyzer to be written in that same language — tree-sitter's parsing core is native C regardless of which host language calls it, so a Python-hosted analyzer parses Java/C++ at the same native speed a Java-hosted one would. A native-per-language rewrite would instead multiply maintenance cost N-fold (N codebases, N dependency trees, N CI pipelines) to re-implement functionality — PROJECT CONVENTIONS DETECTED, MANDATORY BASELINE FILES, --diagram, --analysis — that has nothing to do with the target language's syntax. This mirrors how industry tools solve the same problem: SonarQube supports Java/C#/JS/TS/Python from one core with per-language plugins; tree-sitter-based systems (e.g. Codebase-Memory) parse 60+ languages through one unified schema.
+
+- Planned architecture:
+
+- A LanguageAdapter interface replacing direct ast calls in astutils.py, implementing the same contract (extract_signatures, build_dependency_graph, is_test_module, detect_entry_points) already used throughout conventions.py/baseline.py/analysis.py — those modules call the abstraction today, not ast directly, so this refactor is scoped to one module.
+
+- Per-language adapters (java_adapter.py, c_adapter.py, cpp_adapter.py) backed by tree-sitter-language-pack, dispatched by file extension.
+
+- Per-language convention detectors: Maven/Gradle + Checkstyle/SpotBugs for Java; CMake/Makefile + clang-format/clang-tidy for C/C++, replacing the current pyproject.toml-only assumption.
+
+- Known gap to plan around: no mature tree-sitter grammar exists for VB.NET as of this writing (LINQ/XML literals and preprocessor directives are incompletely supported by the available community grammar) — VB support will lag Java/C/C++ or require a lower-confidence regex fallback, explicitly labeled as such.
+
+- Follow-up (raised during v2.1.0 validation, not scheduled): `--report` currently only benchmarks `--analysis` when the flag is explicitly passed alongside `--report`; there is no default second target. Considered but deferred for this release: making `--report` benchmark self-analysis (`--analysis .`) automatically by default. Deferred because it would roughly double `--report`'s runtime on large repositories (self-analysis walks the same files a second time under a different renderer) with no way to opt out short of a new flag — needs its own flag design (e.g. `--report --no-self-analysis`) rather than a silent default change this close to tagging v2.1.0. Documented workaround for now: `project-context --report --analysis .`.
+
+# [In progress] — v2.1.1 — 2026-08-12
+
+- v2.1.1 — documentation-generation completeness fixes. --analysis now ingests README.md/CHANGELOG.md as a "Documented Feature Inventory," cross-checks it against actually-registered CLI flags (documentation-vs-code drift detection), and forces the detected CLI entry point into the candidate list even when it scores zero on import-usage ranking. Remaining before this is considered done: re-run the full --analysis → tutorial-generation workflow on this repository and independently re-score Completeness/Actionability against the 2/5 baseline from the prior review.
+
+# [v2.1.0] — 2026-08-12
+- v2.1.0 — package split. The single-file cli.py (~2400 lines) has been split into focused modules (config.py, constants.py, utils.py, collectors.py, astutils.py, conventions.py, baseline.py, diagram.py, tree.py, render.py, analysis.py, benchmark.py, cli.py), all living inside the existing src/dev_tools/project_context/ package directory — no new top-level folder, pyproject.toml entry point unchanged. cli.py now supports three equivalent invocation paths (installed console script, python -m dev_tools.project_context, and direct python cli.py for local testing) via a dynamic package re-import mechanism.
+- Validated end-to-end against this repository itself: `--version` agrees across all three invocation paths, `--tree-only`/`--signatures-only`/`--diagram mermaid`/`--graph`/`--format xml` all produced well-formed output, `--analysis .` (self-analysis) completed with the expected full-dump-overload warning at 47 files, and the full pytest suite (80 collected tests) passed.
+- **Added**: `scripts/collect_graph_context.py` — merges a `--graph` output directory into a single markdown file (`index.md` first, then remaining modules alphabetically, each delimited by `--- FILE: <relative path> ---`), for pasting `--graph`'s per-module output into LLM chat UIs that only accept a single attachment. Documented in README under "Merging `--graph` output into one file".
+- **Clarified** (not a code change): `--report --analysis .` benchmarks self-analysis alongside `full`/`tree-only`/`signatures-only`/`graph` in the same table — this already worked per the v2.0.2 `--analysis`-aware `--report` change, but wasn't obvious without passing `--analysis` explicitly. Added to README's benchmarking section and Recommended workflow (item 13) as the standard pre-commit validation command. A default (flagless) self-analysis row is tracked as a follow-up under Roadmap, not included in this release.
+- Remaining before this is considered fully done: none outstanding — module-layout test imports, `--report`/`--analysis`/`--graph` end-to-end parity, and the two documentation gaps above are all closed as of this entry.
+
+## [2.0.2] - 2026-08-11
+
+### Added
+- **Interactive path prompt for frozen `.exe` builds.** When run with zero CLI arguments in an interactive terminal (e.g. double-clicking the packaged executable), the tool now prompts `Path to analyze [<last saved path>]:` and remembers the answer in `project_context_config.json`, written next to the executable, as the default for next time. Triggered only when all three are true: running as a frozen build, zero `argv`, and `stdin` is a real terminal — any scripted/CI invocation that passes even one flag, or has piped/redirected stdin, is completely unaffected.
+- **Marker-file self-tagging replaces name/content-pattern exclusion heuristics.** Every directory this tool creates (`--graph` output, `--analysis` output) now contains a hidden sentinel file, `.project_context_generated`. Any directory containing that sentinel is automatically excluded from all future scans, regardless of its name. This replaces a considered-but-rejected approach of excluding by folder name (`output/`, `dist/`, `_site/`) or by content shape (folder contains only `.md` files) — both of those are heuristics that can misfire on a real source project's own `docs/` folder; a self-written marker has zero false positives and zero false negatives for the tool's own output.
+- **`--analysis` output isolation.** `--analysis <path>` no longer writes to the bare `--output` path in the current working directory. It now defaults to `<target_root>/project_context_output/tutorial_context.md`, tagged with the marker above, so re-running `--analysis` against the same target repository never re-ingests its own prior tutorial output as source material. (This closes the gap explicitly flagged as "not yet implemented" in the 2.0.1 CHANGELOG.)
+- **`--report` now benchmarks `--analysis` when a target is supplied.** `project-context --report --analysis <path>` adds an `analysis:<repo-name>` row to the comparison table, measuring the deterministic tutorial bundle's token cost the same way `full`/`tree-only`/`signatures-only`/`graph` are measured. Without `--analysis`, no such row appears — there is no default second repository to benchmark, so nothing is faked.
+
+### Fixed
+- `VERSION` constant now correctly reads `"2.0.2"` (2.0.1 shipped with the module docstring one version ahead of the actual constant — verified before tagging this release).
+- `--report`'s table column width increased to accommodate the new, longer `analysis:<repo-name>` row label without misaligning existing columns.
+
 ## [2.0.1] - 2026-08-11
 
 ### Fixed
