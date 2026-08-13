@@ -37,6 +37,8 @@ class Config:
     report: bool
     integration_scope: str = "standalone"
     diagram_mode: str = "auto"
+    diagram_detail: str = "auto"  # {"auto", "file", "group"}
+    diagram_imports: str = "collapsed"  # {"collapsed", "all"}
     no_conventions: bool = False
     no_baseline: bool = False
     no_plan_gate: bool = False
@@ -54,6 +56,11 @@ class Config:
         if self.diagram_mode != "auto":
             return self.diagram_mode
         return "text" if (self.tree_only or self.signatures_only) else "none"
+
+    def resolved_diagram_detail(self) -> str:
+        if self.diagram_detail != "auto":
+            return self.diagram_detail
+        return "group" if self.tree_only else "file"
 
 
 def resolve_interactive_path(exe_dir: Path) -> Path:

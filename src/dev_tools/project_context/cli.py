@@ -44,7 +44,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 if __package__ in (None, ""):
     # Direct script execution: `python cli.py ...`. Re-import this same
@@ -180,6 +180,29 @@ else:
         parser.add_argument(
             "--tutorial-language", type=str, default="english", dest="analysis_language"
         )
+        parser.add_argument(
+            "--diagram-imports",
+            type=str,
+            choices=["collapsed", "all"],
+            default="collapsed",
+            dest="diagram_imports",
+            help="Mermaid diagram edge density: 'collapsed' (default) hides "
+            "imports edges internal to the same package/group for "
+            "readability; 'all' renders every detected edge.",
+        )
+        # ... and pass diagram_imports=args.diagram_imports into the Config(...) call
+        parser.add_argument(
+            "--diagram-detail",
+            type=str,
+            choices=["auto", "file", "group"],
+            default="auto",
+            dest="diagram_detail",
+            help="Mermaid diagram node granularity: 'auto' (default) collapses "
+            "each package/group into one node for --tree-only and keeps "
+            "per-file nodes otherwise; 'group' or 'file' force one or the "
+            "other in any mode.",
+        )
+        # ... diagram_detail=args.diagram_detail into Config(...)
         args = parser.parse_args()
 
         output = None if (args.output in ("-", "", None)) else args.output

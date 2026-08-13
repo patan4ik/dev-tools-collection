@@ -15,13 +15,21 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from .astutils import build_dependency_graph, is_test_module
+from .astutils import (
+    build_dependency_graph,
+    is_test_module,
+    lang_for_highlight,  # add to existing import block
+)
 from .baseline import (
     collect_mandatory_baseline,
     select_reference_source_file,
     select_reference_test_file,
 )
-from .collectors import collect_files, warn_if_full_dump_overload
+from .collectors import (
+    collect_files,
+    read_file_content,  # add to existing import block
+    warn_if_full_dump_overload,
+)
 from .config import Config
 from .constants import (
     ANALYSIS_OUTPUT_DIRNAME,
@@ -42,6 +50,53 @@ ABSTRACTION_ATTRIBUTION = (
     "docstrings and relationships come from the real import graph -- no LLM "
     "call was made to produce this section."
 )
+
+# ============================================================
+# NEW: add these two functions to analysis.py
+# ============================================================
+
+
+def _resolve_key_files_for_full_dump(
+    files: list[Path], root: Path, abstractions: list[dict]
+) -> list[Path]:
+    """Files whose complete source is worth embedding verbatim: anything
+    backing a selected candidate abstraction (which already force-includes
+    the detected CLI entry point -- see select_candidate_abstractions).
+    Everything else stays visible via PROJECT TREE + SIGNATURES only."""
+    key_rels: set[str] = set()
+    for abst in abstractions:
+        key_rels.update(abst["files"])
+    return sorted(
+        (f for f in files if f.relative_to(root).as_posix() in key_rels),
+        key=lambda f: f.relative_to(root).as_posix(),
+    )
+
+
+def _render_key_file_contents_section(key_files: list[Path], root: Path, cfg: Config) -> str:
+    """Verbatim source for files backing a candidate abstraction --
+    the ONLY place in --analysis output where full function bodies for
+    these files appear (the signatures-only architecture pass above does
+    not repeat them)."""
+    if not key_files:
+        return (
+            "\n## KEY FILE CONTENTS (full source for files backing the abstractions above)\n\n"
+            "- No candidate-abstraction-backing files were resolved; see SIGNATURES above for "
+            "every file's interface instead.\n"
+        )
+    parts = [
+        "\n## KEY FILE CONTENTS (full source for files backing the abstractions above)\n",
+        "_Every other project file is represented only via PROJECT TREE and SIGNATURES above -- "
+        "full bodies are shown here once, only for files that back a CANDIDATE ABSTRACTIONS entry, "
+        "to avoid dumping the entire project twice._\n",
+    ]
+    for f in key_files:
+        rel = f.relative_to(root).as_posix()
+        content = read_file_content(f, cfg)
+        if content is None:
+            continue
+        lang = lang_for_highlight(f)
+        parts.append(f"\n### `{rel}`\n\n```{lang}\n{content}\n```\n")
+    return "\n".join(parts)
 
 
 def extract_file_abstractions(path: Path) -> list[dict]:
@@ -256,11 +311,14 @@ def select_candidate_abstractions(
 
 
 def render_tutorial_bundle(
-    files: list[Path], root: Path, project_name: str, max_abstractions: int, language: str
+    files: list[Path],
+    root: Path,
+    project_name: str,
+    abstractions: list[dict],
+    language: str,
 ) -> str:
     py_files = [f for f in files if f.suffix in (".py", ".pyi")]
     depends_on, _used_by = build_dependency_graph(py_files, root)
-    abstractions = select_candidate_abstractions(files, root, max_abstractions)
 
     readme_flags = extract_readme_flag_mentions(files, root)
     changelog_highlights = extract_changelog_highlights(files, root)
@@ -361,12 +419,26 @@ def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
     reference_test = None if cfg.no_baseline else select_reference_test_file(target_cfg)
     reference_source = None if cfg.no_baseline else select_reference_source_file(target_cfg)
 
+    # Compute abstractions ONCE, reused for both the full-dump scoping
+    # decision below and the CANDIDATE ABSTRACTIONS section inside
+    # render_tutorial_bundle -- guarantees the two never disagree.
+    abstractions = select_candidate_abstractions(files, target_root, cfg.analysis_max_abstractions)
+    key_files = _resolve_key_files_for_full_dump(files, target_root, abstractions)
+
+    # CHANGED: architecture/conventions/baseline pass now runs
+    # signatures-only (cheap: tree + signatures + module graph, no
+    # bodies) instead of a full dump of every file's complete source.
+    architecture_cfg = replace(target_cfg, signatures_only=True)
     parts = [
-        render_markdown(files, target_cfg, conventions, baseline, reference_test, reference_source)
+        render_markdown(
+            files, architecture_cfg, conventions, baseline, reference_test, reference_source
+        )
     ]
+    # NEW: full verbatim source, once, only for abstraction-backing files.
+    parts.append(_render_key_file_contents_section(key_files, target_root, target_cfg))
     parts.append(
         render_tutorial_bundle(
-            files, target_root, project_name, cfg.analysis_max_abstractions, cfg.analysis_language
+            files, target_root, project_name, abstractions, cfg.analysis_language
         )
     )
     text = "\n\n".join(parts)

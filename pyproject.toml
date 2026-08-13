@@ -28,11 +28,11 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-ignore = ["E501"]
 
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+extend-ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

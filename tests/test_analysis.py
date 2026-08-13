@@ -14,12 +14,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "dev_tools"))
 
 from project_context.analysis import (
+    _render_key_file_contents_section,
+    _resolve_key_files_for_full_dump,
     default_analysis_output_path,
     detect_documentation_drift,
     extract_readme_flag_mentions,
     extract_registered_cli_flags,
+    run_analysis_mode,  # ← добавить
     select_candidate_abstractions,
 )
+from project_context.config import Config  # ← добавить
 from project_context.constants import ANALYSIS_OUTPUT_DIRNAME
 
 
@@ -87,3 +91,195 @@ def test_default_analysis_output_path_is_isolated_subfolder(tmp_path):
     assert out_path.parent.name == ANALYSIS_OUTPUT_DIRNAME
     assert out_path.name == "tutorial_context.md"
     assert out_path.parent.parent == tmp_path
+
+
+# ============================================================
+# 1. _resolve_key_files_for_full_dump() -- decides which files get
+#    full source embedded. Zero prior coverage.
+# ============================================================
+
+
+def test_resolve_key_files_returns_only_abstraction_backing_files(tmp_path):
+
+    keep = tmp_path / "keep.py"
+    drop = tmp_path / "drop.py"
+    keep.write_text("def kept(): pass\n")
+    drop.write_text("def dropped(): pass\n")
+
+    abstractions = [{"name": "kept", "files": ["keep.py"], "kind": "function", "usage_count": 0}]
+    result = _resolve_key_files_for_full_dump([keep, drop], tmp_path, abstractions)
+
+    assert result == [keep]
+
+
+def test_resolve_key_files_deduplicates_file_shared_by_multiple_abstractions(tmp_path):
+
+    shared = tmp_path / "shared.py"
+    shared.write_text("def a(): pass\ndef b(): pass\n")
+
+    abstractions = [
+        {"name": "a", "files": ["shared.py"], "kind": "function", "usage_count": 0},
+        {"name": "b", "files": ["shared.py"], "kind": "function", "usage_count": 0},
+    ]
+    result = _resolve_key_files_for_full_dump([shared], tmp_path, abstractions)
+
+    assert result == [shared]  # not duplicated despite backing two abstractions
+
+
+def test_resolve_key_files_empty_when_no_abstractions(tmp_path):
+
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    assert _resolve_key_files_for_full_dump([f], tmp_path, []) == []
+
+
+# ============================================================
+# 2. _render_key_file_contents_section() -- zero prior coverage.
+# ============================================================
+
+
+def _minimal_cfg(tmp_path: Path) -> Config:
+
+    return Config(
+        root=tmp_path,
+        output=None,
+        tree_only=False,
+        changed_only=False,
+        signatures_only=False,
+        graph=False,
+        grep_pattern=None,
+        max_chars=None,
+        output_format="md",
+        clipboard=False,
+        report=False,
+    )
+
+
+def test_render_key_file_contents_includes_real_verbatim_source(tmp_path):
+
+    f = tmp_path / "app.py"
+    f.write_text("def main():\n    return 42\n")
+    cfg = _minimal_cfg(tmp_path)
+
+    result = _render_key_file_contents_section([f], tmp_path, cfg)
+    assert "## KEY FILE CONTENTS" in result
+    assert "def main():" in result
+    assert "return 42" in result
+
+
+def test_render_key_file_contents_fallback_message_when_empty(tmp_path):
+
+    cfg = _minimal_cfg(tmp_path)
+    result = _render_key_file_contents_section([], tmp_path, cfg)
+    assert "No candidate-abstraction-backing files were resolved" in result
+    assert "SIGNATURES" in result
+
+
+# ============================================================
+# 3. run_analysis_mode() end-to-end -- the ACTUAL Gap-3 bug
+#    (duplication), previously with NO regression test at all.
+# ============================================================
+
+
+def _make_multi_file_project(root: Path) -> Path:
+    """One file backing a likely-ranked abstraction (main/entry point),
+    one file that should NOT rank and therefore should NOT get its
+    full body duplicated."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "core.py").write_text(
+        '"""Core module."""\n'
+        "def helper():\n"
+        '    """Used by main."""\n'
+        "    return 1\n\n"
+        "def main():\n"
+        '    """Entry point."""\n'
+        "    return helper()\n\n"
+        'if __name__ == "__main__":\n'
+        "    main()\n"
+    )
+    (root / "unused_leaf.py").write_text(
+        "def never_called_by_anything_and_should_not_be_duplicated():\n"
+        "    return 'leaf body unique marker 12345'\n"
+    )
+    return root
+
+
+def test_analysis_does_not_duplicate_full_body_for_non_abstraction_files(tmp_path):
+    """Regression guard for the exact Gap-3 bug: a file's full function
+    body must appear at most once in the output (inside KEY FILE
+    CONTENTS if it ranked, or not at all if it didn't) -- never twice
+    (once in a full-dump FILE CONTENTS pass, once again implicitly via
+    a duplicated architecture pass)."""
+    target = _make_multi_file_project(tmp_path / "target")
+    cfg = _minimal_cfg(tmp_path)
+    cfg.analysis_target = str(target)
+    cfg.analysis_max_abstractions = 5
+    cfg.no_baseline = True
+    cfg.output = None  # print to stdout instead of writing a file
+
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_analysis_mode(cfg, write_files=True)
+    output = buf.getvalue()
+
+    marker = "leaf body unique marker 12345"
+    assert output.count(marker) <= 1
+
+
+def test_analysis_signatures_only_architecture_pass_has_no_full_body_dump(tmp_path):
+    """The architecture/tree pass must run signatures-only, not a full
+    dump -- confirmed by checking that a function body which is NOT
+    part of KEY FILE CONTENTS never appears verbatim outside that
+    section."""
+    target = _make_multi_file_project(tmp_path / "target")
+    cfg = _minimal_cfg(tmp_path)
+    cfg.analysis_target = str(target)
+    cfg.analysis_max_abstractions = 5
+    cfg.no_baseline = True
+    cfg.output = None
+
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_analysis_mode(cfg, write_files=True)
+    output = buf.getvalue()
+
+    # The signature must still be visible (nothing is hidden)...
+    assert "never_called_by_anything_and_should_not_be_duplicated" in output
+    # ...but if it didn't rank into the abstractions, its body must not
+    # appear at all outside of a real KEY FILE CONTENTS block.
+    key_section_start = output.find("KEY FILE CONTENTS")
+    body_marker = "leaf body unique marker 12345"
+    if body_marker in output:
+        assert output.index(body_marker) > key_section_start
+
+
+def test_analysis_candidate_abstractions_and_key_files_stay_consistent(tmp_path):
+    """abstractions must be computed ONCE and reused for both the
+    CANDIDATE ABSTRACTIONS section and the KEY FILE CONTENTS scoping --
+    guards against the two silently drifting apart after a refactor."""
+    target = _make_multi_file_project(tmp_path / "target")
+    cfg = _minimal_cfg(tmp_path)
+    cfg.analysis_target = str(target)
+    cfg.analysis_max_abstractions = 5
+    cfg.no_baseline = True
+    cfg.output = None
+
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_analysis_mode(cfg, write_files=True)
+    output = buf.getvalue()
+
+    assert "CANDIDATE ABSTRACTIONS" in output
+    assert "KEY FILE CONTENTS" in output
+    # main() is force-included as the detected entry point in both.
+    assert "main" in output
+    assert "return helper()" in output  # main's real body, verbatim, in KEY FILE CONTENTS

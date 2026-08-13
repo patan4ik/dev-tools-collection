@@ -21,6 +21,75 @@ from .constants import (
     NON_CODE_DOC_EXT,
 )
 
+# ============================================================
+# NEW helper: deterministic grouping by path, no inference
+# ============================================================
+
+
+def _group_key(rel: str, root: Path) -> str | None:
+    """Deterministic grouping key from the file's own path -- no
+    inference, no LLM. Returns None for synthetic nodes (actors, the
+    build-artifact node) that don't correspond to a real on-disk path
+    and must never be grouped into a subgraph."""
+    if not (root / rel).exists():
+        return None  # synthetic node (actor/artifact label, not a path)
+    if rel.startswith(".github/workflows/"):
+        return "CI"
+    parts = rel.split("/")
+    if parts[0] == "tests":
+        return "tests"
+    if parts[0] == "src" and len(parts) >= 3:
+        return "/".join(parts[:3])
+    if parts[0] == "src" and len(parts) == 2:
+        return "/".join(parts[:2])
+    if len(parts) == 1:
+        return "root"
+    return parts[0]
+
+
+def _build_subgraphs(node_labels: dict[str, str], root: Path) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for rel in node_labels:
+        key = _group_key(rel, root)
+        if key is None:
+            continue  # synthetic node -- rendered ungrouped, see caller
+        groups.setdefault(key, []).append(rel)
+    return groups
+
+
+def _render_group_node_label(group_name: str, rels: list[str]) -> str:
+    """Plain-text member list inside a collapsed group node -- still a
+    real, verbatim fact (the actual filenames), just aggregated rather
+    than drawn as separate connected nodes."""
+    filenames = sorted(Path(r).name for r in rels)
+    preview = ", ".join(filenames[:6])
+    if len(filenames) > 6:
+        preview += f", +{len(filenames) - 6} more"
+    return f"{group_name}<br/><i>{len(rels)} files: {preview}</i>"
+
+
+def _aggregate_group_edges(
+    edges: list[tuple[str, str, str, bool]],
+    node_to_group: dict[str, str],
+) -> list[tuple[str, str, str, bool]]:
+    """Collapses many file-to-file edges into deduplicated group-to-group
+    edges. Drops edges that stay inside one group (they'd be self-loops
+    on the collapsed node) and any edge touching a node with no group
+    (shouldn't happen for real files, but defensive)."""
+    seen: set[tuple[str, str, str]] = set()
+    aggregated: list[tuple[str, str, str, bool]] = []
+    for src, dst, label, dashed in edges:
+        src_group = node_to_group.get(src, src)  # synthetic nodes: use their own id as "group"
+        dst_group = node_to_group.get(dst, dst)
+        if src_group == dst_group:
+            continue  # intra-group edge -- would be a self-loop, no info added
+        key = (src_group, dst_group, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        aggregated.append((src_group, dst_group, label, dashed))
+    return aggregated
+
 
 def _module_role_label(rel: str, root: Path, path: Path) -> str:
     if path.suffix == ".py":
@@ -196,48 +265,164 @@ def _mermaid_node_id(rel: str) -> str:
     return "n_" + re.sub(r"[^A-Za-z0-9_]", "_", rel)
 
 
-def render_module_graph_mermaid(files: list[Path], root: Path, entry_points: dict[str, str]) -> str:
-    node_labels, edges = detect_module_graph_edges(files, root, entry_points)
+def render_module_graph_mermaid(
+    files: list[Path],
+    root: Path,
+    entrypoints: dict[str, str],
+    diagram_imports: str = "collapsed",
+    diagram_detail: str = "file",
+) -> str:
+    node_labels, edges = detect_module_graph_edges(files, root, entrypoints)
     if not edges:
         return ""
+
     remote_prefix = get_git_remote_url(root)
     node_ids = {rel: _mermaid_node_id(rel) for rel in node_labels}
+    detail = diagram_detail  # passed in from cfg.resolved_diagram_detail()
+    groups = _build_subgraphs(node_labels, root)
+    node_to_group = {rel: g for g, rels in groups.items() for rel in rels}
 
-    lines = ["\n## MODULE GRAPH (Mermaid, deterministic -- no LLM)\n", "```mermaid", "flowchart TD"]
-    for rel in sorted(node_labels):
+    lines = ["## MODULE GRAPH (Mermaid, deterministic -- no LLM)\n", "```mermaid", "flowchart TD"]
+
+    # Actor/synthetic nodes (no real path) render outside any subgraph.
+    # Synthetic nodes (actors, build-artifact) are never grouped --
+    # role check kept as a defensive second signal alongside the
+    # path-existence check already applied inside _group_key/_build_subgraphs.
+    synthetic = {
+        rel
+        for rel in node_labels
+        if node_labels[rel] in ("actor", "artifact") or rel not in node_to_group
+    }
+
+    if detail == "group":
+        # One node per group -- member filenames listed as plain text.
+        group_node_id = {g: "g_" + re.sub(r"[^A-Za-z0-9]", "_", g) for g in groups}
+        for group_name, rels in sorted(groups.items()):
+            if not rels:
+                continue
+            group_label = _render_group_node_label(group_name, rels)
+            lines.append(f'  {group_node_id[group_name]}["{group_label}"]')
+        for rel in sorted(synthetic):
+            role = node_labels[rel]
+            shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
+            lines.append(f"  {node_ids[rel]}{shape}")
+
+        node_to_group_for_agg = {rel: node_to_group.get(rel, rel) for rel in node_labels}
+        agg_edges = _aggregate_group_edges(edges, node_to_group_for_agg)
+        for src_group, dst_group, edge_label, dashed in agg_edges:
+            src_id = group_node_id.get(src_group, node_ids.get(src_group))
+            dst_id = group_node_id.get(dst_group, node_ids.get(dst_group))
+            if not src_id or not dst_id:
+                continue
+            arrow = "-.->" if dashed else "-->"
+            lines.append(f'  {src_id} {arrow}|"{edge_label}"| {dst_id}')
+
+        for group_name, rels in sorted(groups.items()):
+            if not rels:
+                continue
+            roles = [node_labels[r] for r in rels]
+            dominant = max(set(roles), key=roles.count)
+            lines.append(
+                f"  class {group_node_id[group_name]} "
+                f"{MERMAID_ROLE_STYLES.get(dominant, 'toneNeutral')}"
+            )
+        for rel in sorted(synthetic):
+            lines.append(
+                f"  class {node_ids[rel]} "
+                f"{MERMAID_ROLE_STYLES.get(node_labels[rel], 'toneNeutral')}"
+            )
+        lines.append("  classDef toneBlue fill:#dbeafe,stroke:#2563eb,color:#172554")
+        lines.append("  classDef toneAmber fill:#fef3c7,stroke:#d97706,color:#78350f")
+        lines.append("  classDef toneMint fill:#dcfce7,stroke:#16a34a,color:#14532d")
+        lines.append("  classDef toneNeutral fill:#f8fafc,stroke:#334155,color:#0f172a")
+        # No click links in group mode -- a collapsed node has no single
+        # real on-disk path to link to; per-file exploration belongs to
+        # --diagram-detail file (or --graph, which is already file-scoped).
+        lines.append("```")
+        return "\n".join(lines)
+
+    # detail == "file": original per-file rendering path (subgraph
+    # blocks + --diagram-imports collapsed/all + click links), unchanged.
+    ungrouped = [rel for rel in node_labels if rel in synthetic]
+    grouped_only = {g: [r for r in rels if r not in synthetic] for g, rels in groups.items()}
+
+    for group_name, rels in sorted(grouped_only.items()):
+        if not rels:
+            continue
+        safe_group_id = re.sub(r"[^A-Za-z0-9]", "_", group_name)
+        lines.append(f'  subgraph {safe_group_id}["{group_name}"]')
+        for rel in sorted(rels):
+            role = node_labels[rel]
+            shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
+            lines.append(f"    {node_ids[rel]}{shape}")
+        lines.append("  end")
+
+    for rel in sorted(ungrouped):
         role = node_labels[rel]
-        shape = f'(("{rel}"))' if role == "actor" else f'["{rel}<br/>[{role}]"]'
+        shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
         lines.append(f"  {node_ids[rel]}{shape}")
+
+    edges_rendered = 0
     for src, dst, label, dashed in edges:
         if src not in node_ids or dst not in node_ids:
             continue
+        if (
+            diagram_imports == "collapsed"
+            and label == "imports"
+            and node_to_group.get(src) == node_to_group.get(dst)
+            and node_to_group.get(src) is not None
+        ):
+            continue  # same-package import edge suppressed for readability
         arrow = "-.->" if dashed else "-->"
         lines.append(f'  {node_ids[src]} {arrow}|"{label}"| {node_ids[dst]}')
+        edges_rendered += 1
+
+    if diagram_imports == "collapsed":
+        suppressed = sum(
+            1
+            for src, dst, label, _ in edges
+            if label == "imports"
+            and node_to_group.get(src) == node_to_group.get(dst)
+            and node_to_group.get(src) is not None
+        )
+        if suppressed:
+            lines.append(
+                f'  %% {suppressed} same-package "imports" edge(s) hidden for readability '
+                f"-- rerun with --diagram-imports all to see every edge"
+            )
+
     for rel in sorted(node_labels):
         lines.append(
-            f"  class {node_ids[rel]} {MERMAID_ROLE_STYLES.get(node_labels[rel], 'toneNeutral')}"
+            f"  class {node_ids[rel]} "
+            f"{MERMAID_ROLE_STYLES.get(node_labels[rel], 'toneNeutral')}"
         )
-    lines.append(
-        "  classDef toneBlue fill:#dbeafe,stroke:#2563eb,color:#172554\n"
-        "  classDef toneAmber fill:#fef3c7,stroke:#d97706,color:#78350f\n"
-        "  classDef toneMint fill:#dcfce7,stroke:#16a34a,color:#14532d\n"
-        "  classDef toneNeutral fill:#f8fafc,stroke:#334155,color:#0f172a"
-    )
+    lines.append("  classDef toneBlue fill:#dbeafe,stroke:#2563eb,color:#172554")
+    lines.append("  classDef toneAmber fill:#fef3c7,stroke:#d97706,color:#78350f")
+    lines.append("  classDef toneMint fill:#dcfce7,stroke:#16a34a,color:#14532d")
+    lines.append("  classDef toneNeutral fill:#f8fafc,stroke:#334155,color:#0f172a")
+
     if remote_prefix:
         lines.append("")
         for rel, nid in node_ids.items():
             if node_labels[rel] in ("actor", "artifact"):
                 continue
             if (root / rel).exists():
-                lines.append(f'  click {nid} "{remote_prefix}/{rel}"')
-    lines.append("```\n")
+                lines.append(f'  click {nid} "{remote_prefix}{rel}"')
+
+    lines.append("```")
     return "\n".join(lines)
 
 
-def render_module_graph(files: list[Path], cfg: Config, entry_points: dict[str, str]) -> str:
+def render_module_graph(files: list[Path], cfg: Config, entrypoints: dict[str, str]) -> str:
     mode = cfg.resolved_diagram_mode()
     if mode == "text":
-        return render_module_graph_text(files, cfg.root, entry_points)
+        return render_module_graph_text(files, cfg.root, entrypoints)
     if mode == "mermaid":
-        return render_module_graph_mermaid(files, cfg.root, entry_points)
+        return render_module_graph_mermaid(
+            files,
+            cfg.root,
+            entrypoints,
+            diagram_imports=cfg.diagram_imports,
+            diagram_detail=cfg.resolved_diagram_detail(),
+        )
     return ""

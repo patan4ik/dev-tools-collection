@@ -105,7 +105,7 @@ def get_git_remote_url(root: Path) -> str | None:
             branch = branch_result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
-    return f"https://github.com/{owner}/{repo}/blob/{branch}"
+    return f"https://github.com/{owner}/{repo}/blob/{branch}/"
 
 
 def matches_grep(path: Path, pattern: re.Pattern) -> bool:

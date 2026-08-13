@@ -164,6 +164,7 @@ It concatenates every `.md` file under the `--graph` output directory into one d
 11. Use `--analysis <path>` only against repositories you have the right to extract and publish code from — check the target's own `LICENSE` file (now surfaced automatically in the output if present) before publishing any tutorial chapters derived from its code.
 12. Never delete the `.project_context_generated` marker file inside a `project_context_output/` or `project_graph/` folder — removing it (without deleting the whole folder) will cause the next scan to re-ingest that folder's contents as if it were source code.
 13. Before committing a release, run `--report --analysis .` (self-analysis) alongside the other modes as a pre-commit sanity check — it exercises the `--analysis` code path against a known-good target (the tool's own repository) without needing a separately cloned test repository.
+14. Use --diagram-detail group (the default for --tree-only) for a quick architectural glance at a project's package structure; switch to --diagram-detail file only when you need to trace exactly which file imports which, since per-file detail re-introduces the node/edge density that group mode exists to avoid.
 
 ## PROJECT CONVENTIONS DETECTED (v1.7)
 
@@ -223,283 +224,80 @@ Both additions are covered by the existing baseline toggle:
 project-context --no-baseline --output context.md
 ```
 
-## MODULE GRAPH / --diagram (v1.9.6)
+## MODULE GRAPH / --diagram (Mermaid, deterministic -- no LLM)
 
 `--tree-only` and `--signatures-only` can render the project's real dependency and wiring structure as an architecture diagram, in the spirit of tools like [GitDiagram](https://gitdiagram.com/) — but computed entirely offline from AST, regex, and local git/CI-config parsing, with no LLM call and no GitHub API access.
 
 ```bash
-project-context --tree-only --diagram text     # plain arrow list (default for --tree-only)
-project-context --tree-only --diagram mermaid  # Mermaid flowchart block
-project-context --diagram none                 # suppress the module graph entirely
+project-context --tree-only --diagram text # plain arrow list (default for --tree-only)
+project-context --tree-only --diagram mermaid # Mermaid flowchart block
+project-context --diagram none # suppress the module graph entirely
 ```
 
 ```mermaid
 flowchart TD
-  n__github_workflows_build_binaries_yml[".github/workflows/build-binaries.yml<br/>[ci]"]
-  n__github_workflows_tests_yml[".github/workflows/tests.yml<br/>[ci]"]
-  n_CHANGELOG_md["CHANGELOG.md<br/>[doc]"]
-  n_CONTRIBUTING_md["CONTRIBUTING.md<br/>[doc]"]
-  n_Distribution___build_artifact["Distribution / build artifact<br/>[artifact]"]
-  n_External_Python_callers(("External Python callers"))
-  n_LICENSE_md["LICENSE.md<br/>[doc]"]
-  n_User___automation_invoker(("User / automation invoker"))
-  n_docs_Chapter_10__get_changed_files___Focusing_on_Modified_Files_md["docs/Chapter 10_ get_changed_files — Focusing on Modified Files.md<br/>[doc]"]
-  n_docs_Chapter_1__Config___The_Tool_s_Control_Panel_md["docs/Chapter 1_ Config — The Tool's Control Panel.md<br/>[doc]"]
-  n_docs_Chapter_2__collect_files___Deciding_What_Belongs_in_the_Context_md["docs/Chapter 2_ collect_files — Deciding What Belongs in the Context.md<br/>[doc]"]
-  n_docs_Chapter_3__run_analysis_mode___Starting_the_Tutorial_Analysis_md["docs/Chapter 3_ run_analysis_mode — Starting the Tutorial Analysis.md<br/>[doc]"]
-  n_docs_Chapter_4__extract_file_abstractions___Finding_the_Important_Building_Blocks_md["docs/Chapter 4_ extract_file_abstractions — Finding the Important Building Blocks.md<br/>[doc]"]
-  n_docs_Chapter_5__select_candidate_abstractions___Choosing_What_Matters_md["docs/Chapter 5_ select_candidate_abstractions — Choosing What Matters.md<br/>[doc]"]
-  n_docs_Chapter_6__build_dependency_graph___Mapping_File_Relationships_md["docs/Chapter 6_ build_dependency_graph — Mapping File Relationships.md<br/>[doc]"]
-  n_docs_Chapter_7__render_tutorial_bundle___Assembling_the_Tutorial_Context_md["docs/Chapter 7_ render_tutorial_bundle — Assembling the Tutorial Context.md<br/>[doc]"]
-  n_docs_Chapter_8__estimate_tokens___Measuring_the_Context_Size_md["docs/Chapter 8_ estimate_tokens — Measuring the Context Size.md<br/>[doc]"]
-  n_docs_Chapter_9__load_gitignore_patterns___Respecting_Repository_Ignore_Rules_md["docs/Chapter 9_ load_gitignore_patterns — Respecting Repository Ignore Rules.md<br/>[doc]"]
-  n_docs_Project_Context_Documentation_md["docs/Project Context Documentation.md<br/>[doc]"]
-  n_pyproject_toml["pyproject.toml<br/>[build-config]"]
-  n_src_dev_tools___init___py["src/dev_tools/__init__.py<br/>[package-init]"]
-  n_src_dev_tools_project_context_README_md["src/dev_tools/project_context/README.md<br/>[docs]"]
-  n_src_dev_tools_project_context___init___py["src/dev_tools/project_context/__init__.py<br/>[package-init]"]
-  n_src_dev_tools_project_context___main___py["src/dev_tools/project_context/__main__.py<br/>[source]"]
-  n_src_dev_tools_project_context_analysis_py["src/dev_tools/project_context/analysis.py<br/>[source]"]
-  n_src_dev_tools_project_context_astutils_py["src/dev_tools/project_context/astutils.py<br/>[source]"]
-  n_src_dev_tools_project_context_baseline_py["src/dev_tools/project_context/baseline.py<br/>[source]"]
-  n_src_dev_tools_project_context_benchmark_py["src/dev_tools/project_context/benchmark.py<br/>[source]"]
-  n_src_dev_tools_project_context_cli_py["src/dev_tools/project_context/cli.py<br/>[source]"]
-  n_src_dev_tools_project_context_collectors_py["src/dev_tools/project_context/collectors.py<br/>[source]"]
-  n_src_dev_tools_project_context_config_py["src/dev_tools/project_context/config.py<br/>[source]"]
-  n_src_dev_tools_project_context_constants_py["src/dev_tools/project_context/constants.py<br/>[source]"]
-  n_src_dev_tools_project_context_conventions_py["src/dev_tools/project_context/conventions.py<br/>[source]"]
-  n_src_dev_tools_project_context_diagram_py["src/dev_tools/project_context/diagram.py<br/>[source]"]
-  n_src_dev_tools_project_context_render_py["src/dev_tools/project_context/render.py<br/>[source]"]
-  n_src_dev_tools_project_context_tree_py["src/dev_tools/project_context/tree.py<br/>[source]"]
-  n_src_dev_tools_project_context_utils_py["src/dev_tools/project_context/utils.py<br/>[source]"]
-  n_tests_test_analysis_py["tests/test_analysis.py<br/>[test]"]
-  n_tests_test_astutils_py["tests/test_astutils.py<br/>[test]"]
-  n_tests_test_baseline_py["tests/test_baseline.py<br/>[test]"]
-  n_tests_test_benchmark_py["tests/test_benchmark.py<br/>[test]"]
-  n_tests_test_cli_py["tests/test_cli.py<br/>[test]"]
-  n_tests_test_collectors_py["tests/test_collectors.py<br/>[test]"]
-  n_tests_test_conventions_py["tests/test_conventions.py<br/>[test]"]
-  n_tests_test_diagram_py["tests/test_diagram.py<br/>[test]"]
-  n_tests_test_render_py["tests/test_render.py<br/>[test]"]
-  n_validation_output_signatures_md["validation_output/signatures.md<br/>[doc]"]
-  n_validation_output_tree_md["validation_output/tree.md<br/>[doc]"]
-  n_venv_devtools_pyvenv_cfg["venv-devtools/pyvenv.cfg<br/>[other-config]"]
-  n_src_dev_tools_project_context___init___py -->|"imports"| n_src_dev_tools_project_context_cli_py
-  n_src_dev_tools_project_context___main___py -->|"imports"| n_src_dev_tools_project_context_cli_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_astutils_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_baseline_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_conventions_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_render_py
-  n_src_dev_tools_project_context_analysis_py -->|"imports"| n_src_dev_tools_project_context_utils_py
-  n_src_dev_tools_project_context_astutils_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_baseline_py -->|"imports"| n_src_dev_tools_project_context_astutils_py
-  n_src_dev_tools_project_context_baseline_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_baseline_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_baseline_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_analysis_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_baseline_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_conventions_py
-  n_src_dev_tools_project_context_benchmark_py -->|"imports"| n_src_dev_tools_project_context_render_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_analysis_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_baseline_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_benchmark_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_conventions_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_render_py
-  n_src_dev_tools_project_context_cli_py -->|"imports"| n_src_dev_tools_project_context_utils_py
-  n_src_dev_tools_project_context_collectors_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_collectors_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_collectors_py -->|"imports"| n_src_dev_tools_project_context_utils_py
-  n_src_dev_tools_project_context_config_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_conventions_py -->|"imports"| n_src_dev_tools_project_context_astutils_py
-  n_src_dev_tools_project_context_conventions_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_conventions_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_conventions_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_diagram_py -->|"imports"| n_src_dev_tools_project_context_astutils_py
-  n_src_dev_tools_project_context_diagram_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_diagram_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_diagram_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_astutils_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_baseline_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_collectors_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_config_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_conventions_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_diagram_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_tree_py
-  n_src_dev_tools_project_context_render_py -->|"imports"| n_src_dev_tools_project_context_utils_py
-  n_src_dev_tools_project_context_utils_py -->|"imports"| n_src_dev_tools_project_context_constants_py
-  n_pyproject_toml -.->|"registers project-context"| n_src_dev_tools_project_context_cli_py
-  n_src_dev_tools_project_context___init___py -->|"belongs to"| n_src_dev_tools___init___py
-  n_src_dev_tools_project_context_README_md -.->|"documents"| n_src_dev_tools_project_context___init___py
-  n_pyproject_toml -->|"packages"| n_src_dev_tools___init___py
-  n_tests_test_analysis_py -->|"validates"| n_src_dev_tools_project_context___main___py
-  n_tests_test_analysis_py -->|"validates"| n_src_dev_tools_project_context_analysis_py
-  n_tests_test_analysis_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_analysis_py -->|"validates"| n_src_dev_tools_project_context_constants_py
-  n_tests_test_astutils_py -->|"validates"| n_src_dev_tools_project_context_astutils_py
-  n_tests_test_astutils_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_astutils_py -->|"validates"| n_src_dev_tools_project_context_utils_py
-  n_tests_test_baseline_py -->|"validates"| n_src_dev_tools_project_context_baseline_py
-  n_tests_test_baseline_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_baseline_py -->|"validates"| n_src_dev_tools_project_context_tree_py
-  n_tests_test_benchmark_py -->|"validates"| n_src_dev_tools_project_context_analysis_py
-  n_tests_test_benchmark_py -->|"validates"| n_src_dev_tools_project_context_benchmark_py
-  n_tests_test_benchmark_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_benchmark_py -->|"validates"| n_src_dev_tools_project_context_render_py
-  n_tests_test_benchmark_py -->|"validates"| n_src_dev_tools_project_context_tree_py
-  n_tests_test_cli_py -->|"validates"| n_src_dev_tools_project_context_baseline_py
-  n_tests_test_cli_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_cli_py -->|"validates"| n_src_dev_tools_project_context_tree_py
-  n_tests_test_collectors_py -->|"validates"| n_src_dev_tools_project_context_analysis_py
-  n_tests_test_collectors_py -->|"validates"| n_src_dev_tools_project_context_collectors_py
-  n_tests_test_collectors_py -->|"validates"| n_src_dev_tools_project_context_config_py
-  n_tests_test_collectors_py -->|"validates"| n_src_dev_tools_project_context_constants_py
-  n_tests_test_conventions_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_conventions_py -->|"validates"| n_src_dev_tools_project_context_conventions_py
-  n_tests_test_conventions_py -->|"validates"| n_src_dev_tools_project_context_tree_py
-  n_tests_test_diagram_py -->|"validates"| n_src_dev_tools_project_context_cli_py
-  n_tests_test_diagram_py -->|"validates"| n_src_dev_tools_project_context_diagram_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_baseline_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_collectors_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_config_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_conventions_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_render_py
-  n_tests_test_render_py -->|"validates"| n_src_dev_tools_project_context_tree_py
-  n__github_workflows_build_binaries_yml -->|"builds from"| n_pyproject_toml
-  n_pyproject_toml -->|"produces"| n_Distribution___build_artifact
-  n__github_workflows_build_binaries_yml -->|"publishes build"| n_Distribution___build_artifact
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_analysis_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_astutils_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_baseline_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_benchmark_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_cli_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_collectors_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_conventions_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_diagram_py
-  n__github_workflows_tests_yml -->|"runs"| n_tests_test_render_py
-  n_User___automation_invoker -->|"invokes"| n_src_dev_tools_project_context_cli_py
-  n_External_Python_callers -->|"imports"| n_src_dev_tools___init___py
-  class n__github_workflows_build_binaries_yml toneAmber
-  class n__github_workflows_tests_yml toneAmber
-  class n_CHANGELOG_md toneMint
-  class n_CONTRIBUTING_md toneMint
+  g_CI["CI<br/><i>2 files: build-binaries.yml, tests.yml</i>"]
+  g_root["root<br/><i>5 files: CHANGELOG.md, CONTRIBUTING.md, LICENSE.md, diagnose_module_graph.py, pyproject.toml</i>"]
+  g_scripts["scripts<br/><i>1 files: collect_graph_context.py</i>"]
+  g_src_dev_tools___init___py["src/dev_tools/__init__.py<br/><i>1 files: __init__.py</i>"]
+  g_src_dev_tools_project_context["src/dev_tools/project_context<br/><i>16 files: README.md, __init__.py, __main__.py, analysis.py, astutils.py, baseline.py, +10 more</i>"]
+  g_tests["tests<br/><i>9 files: test_analysis.py, test_astutils.py, test_baseline.py, test_benchmark.py, test_cli.py, test_collectors.py, +3 more</i>"]
+  g_venv_devtools["venv-devtools<br/><i>1 files: pyvenv.cfg</i>"]
+  n_Distribution___build_artifact["Distribution / build artifact<br/>artifact"]
+  n_External_Python_callers((External Python callers))
+  n_User___automation_invoker((User / automation invoker))
+  g_root -.->|"registers project-context"| g_src_dev_tools_project_context
+  g_src_dev_tools_project_context -->|"belongs to"| g_src_dev_tools___init___py
+  g_root -->|"packages"| g_src_dev_tools___init___py
+  g_tests -->|"validates"| g_src_dev_tools_project_context
+  g_CI -->|"builds from"| g_root
+  g_root -->|"produces"| n_Distribution___build_artifact
+  g_CI -->|"publishes build"| n_Distribution___build_artifact
+  g_CI -->|"runs"| g_tests
+  n_User___automation_invoker -->|"invokes"| g_src_dev_tools_project_context
+  n_External_Python_callers -->|"imports"| g_src_dev_tools___init___py
+  class g_CI toneAmber
+  class g_root toneMint
+  class g_scripts toneBlue
+  class g_src_dev_tools___init___py toneBlue
+  class g_src_dev_tools_project_context toneBlue
+  class g_tests toneAmber
+  class g_venv_devtools toneNeutral
   class n_Distribution___build_artifact toneAmber
   class n_External_Python_callers toneNeutral
-  class n_LICENSE_md toneMint
   class n_User___automation_invoker toneNeutral
-  class n_docs_Chapter_10__get_changed_files___Focusing_on_Modified_Files_md toneMint
-  class n_docs_Chapter_1__Config___The_Tool_s_Control_Panel_md toneMint
-  class n_docs_Chapter_2__collect_files___Deciding_What_Belongs_in_the_Context_md toneMint
-  class n_docs_Chapter_3__run_analysis_mode___Starting_the_Tutorial_Analysis_md toneMint
-  class n_docs_Chapter_4__extract_file_abstractions___Finding_the_Important_Building_Blocks_md toneMint
-  class n_docs_Chapter_5__select_candidate_abstractions___Choosing_What_Matters_md toneMint
-  class n_docs_Chapter_6__build_dependency_graph___Mapping_File_Relationships_md toneMint
-  class n_docs_Chapter_7__render_tutorial_bundle___Assembling_the_Tutorial_Context_md toneMint
-  class n_docs_Chapter_8__estimate_tokens___Measuring_the_Context_Size_md toneMint
-  class n_docs_Chapter_9__load_gitignore_patterns___Respecting_Repository_Ignore_Rules_md toneMint
-  class n_docs_Project_Context_Documentation_md toneMint
-  class n_pyproject_toml toneAmber
-  class n_src_dev_tools___init___py toneBlue
-  class n_src_dev_tools_project_context_README_md toneMint
-  class n_src_dev_tools_project_context___init___py toneBlue
-  class n_src_dev_tools_project_context___main___py toneBlue
-  class n_src_dev_tools_project_context_analysis_py toneBlue
-  class n_src_dev_tools_project_context_astutils_py toneBlue
-  class n_src_dev_tools_project_context_baseline_py toneBlue
-  class n_src_dev_tools_project_context_benchmark_py toneBlue
-  class n_src_dev_tools_project_context_cli_py toneBlue
-  class n_src_dev_tools_project_context_collectors_py toneBlue
-  class n_src_dev_tools_project_context_config_py toneBlue
-  class n_src_dev_tools_project_context_constants_py toneBlue
-  class n_src_dev_tools_project_context_conventions_py toneBlue
-  class n_src_dev_tools_project_context_diagram_py toneBlue
-  class n_src_dev_tools_project_context_render_py toneBlue
-  class n_src_dev_tools_project_context_tree_py toneBlue
-  class n_src_dev_tools_project_context_utils_py toneBlue
-  class n_tests_test_analysis_py toneAmber
-  class n_tests_test_astutils_py toneAmber
-  class n_tests_test_baseline_py toneAmber
-  class n_tests_test_benchmark_py toneAmber
-  class n_tests_test_cli_py toneAmber
-  class n_tests_test_collectors_py toneAmber
-  class n_tests_test_conventions_py toneAmber
-  class n_tests_test_diagram_py toneAmber
-  class n_tests_test_render_py toneAmber
-  class n_validation_output_signatures_md toneMint
-  class n_validation_output_tree_md toneMint
-  class n_venv_devtools_pyvenv_cfg toneNeutral
   classDef toneBlue fill:#dbeafe,stroke:#2563eb,color:#172554
   classDef toneAmber fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef toneMint fill:#dcfce7,stroke:#16a34a,color:#14532d
   classDef toneNeutral fill:#f8fafc,stroke:#334155,color:#0f172a
-
-  click n__github_workflows_build_binaries_yml "https://github.com/patan4ik/dev-tools-collection/blob/main/.github/workflows/build-binaries.yml"
-  click n__github_workflows_tests_yml "https://github.com/patan4ik/dev-tools-collection/blob/main/.github/workflows/tests.yml"
-  click n_CHANGELOG_md "https://github.com/patan4ik/dev-tools-collection/blob/main/CHANGELOG.md"
-  click n_CONTRIBUTING_md "https://github.com/patan4ik/dev-tools-collection/blob/main/CONTRIBUTING.md"
-  click n_LICENSE_md "https://github.com/patan4ik/dev-tools-collection/blob/main/LICENSE.md"
-  click n_docs_Chapter_10__get_changed_files___Focusing_on_Modified_Files_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 10_ get_changed_files — Focusing on Modified Files.md"
-  click n_docs_Chapter_1__Config___The_Tool_s_Control_Panel_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 1_ Config — The Tool's Control Panel.md"
-  click n_docs_Chapter_2__collect_files___Deciding_What_Belongs_in_the_Context_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 2_ collect_files — Deciding What Belongs in the Context.md"
-  click n_docs_Chapter_3__run_analysis_mode___Starting_the_Tutorial_Analysis_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 3_ run_analysis_mode — Starting the Tutorial Analysis.md"
-  click n_docs_Chapter_4__extract_file_abstractions___Finding_the_Important_Building_Blocks_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 4_ extract_file_abstractions — Finding the Important Building Blocks.md"
-  click n_docs_Chapter_5__select_candidate_abstractions___Choosing_What_Matters_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 5_ select_candidate_abstractions — Choosing What Matters.md"
-  click n_docs_Chapter_6__build_dependency_graph___Mapping_File_Relationships_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 6_ build_dependency_graph — Mapping File Relationships.md"
-  click n_docs_Chapter_7__render_tutorial_bundle___Assembling_the_Tutorial_Context_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 7_ render_tutorial_bundle — Assembling the Tutorial Context.md"
-  click n_docs_Chapter_8__estimate_tokens___Measuring_the_Context_Size_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 8_ estimate_tokens — Measuring the Context Size.md"
-  click n_docs_Chapter_9__load_gitignore_patterns___Respecting_Repository_Ignore_Rules_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Chapter 9_ load_gitignore_patterns — Respecting Repository Ignore Rules.md"
-  click n_docs_Project_Context_Documentation_md "https://github.com/patan4ik/dev-tools-collection/blob/main/docs/Project Context Documentation.md"
-  click n_pyproject_toml "https://github.com/patan4ik/dev-tools-collection/blob/main/pyproject.toml"
-  click n_src_dev_tools___init___py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/__init__.py"
-  click n_src_dev_tools_project_context_README_md "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/README.md"
-  click n_src_dev_tools_project_context___init___py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/__init__.py"
-  click n_src_dev_tools_project_context___main___py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/__main__.py"
-  click n_src_dev_tools_project_context_analysis_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/analysis.py"
-  click n_src_dev_tools_project_context_astutils_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/astutils.py"
-  click n_src_dev_tools_project_context_baseline_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/baseline.py"
-  click n_src_dev_tools_project_context_benchmark_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/benchmark.py"
-  click n_src_dev_tools_project_context_cli_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/cli.py"
-  click n_src_dev_tools_project_context_collectors_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/collectors.py"
-  click n_src_dev_tools_project_context_config_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/config.py"
-  click n_src_dev_tools_project_context_constants_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/constants.py"
-  click n_src_dev_tools_project_context_conventions_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/conventions.py"
-  click n_src_dev_tools_project_context_diagram_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/diagram.py"
-  click n_src_dev_tools_project_context_render_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/render.py"
-  click n_src_dev_tools_project_context_tree_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/tree.py"
-  click n_src_dev_tools_project_context_utils_py "https://github.com/patan4ik/dev-tools-collection/blob/main/src/dev_tools/project_context/utils.py"
-  click n_tests_test_analysis_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_analysis.py"
-  click n_tests_test_astutils_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_astutils.py"
-  click n_tests_test_baseline_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_baseline.py"
-  click n_tests_test_benchmark_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_benchmark.py"
-  click n_tests_test_cli_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_cli.py"
-  click n_tests_test_collectors_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_collectors.py"
-  click n_tests_test_conventions_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_conventions.py"
-  click n_tests_test_diagram_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_diagram.py"
-  click n_tests_test_render_py "https://github.com/patan4ik/dev-tools-collection/blob/main/tests/test_render.py"
-  click n_validation_output_signatures_md "https://github.com/patan4ik/dev-tools-collection/blob/main/validation_output/signatures.md"
-  click n_validation_output_tree_md "https://github.com/patan4ik/dev-tools-collection/blob/main/validation_output/tree.md"
-  click n_venv_devtools_pyvenv_cfg "https://github.com/patan4ik/dev-tools-collection/blob/main/venv-devtools/pyvenv.cfg"
 ```
 
 Detected relationships: `imports` (real Python import edges), `registers entry point` (from `pyproject.toml`'s `[project.scripts]`), `belongs to` (package hierarchy), `documents` (README → package), `packages` (manifest → root package), `validates` (test → the source files it actually references), `runs`/`builds from`/`produces`/`publishes build` (CI workflow ↔ tests ↔ manifest ↔ build artifact), and `invokes`/`imports` for two synthetic actor nodes added only when a real target exists.
 
 One capability is intentionally **not** reproduced: GitDiagram's LLM-generated semantic descriptions (e.g. turning `__init__.py` into "Project context API / feature package"). That requires summarizing README/docstrings — inference, not extraction — and was left out to avoid presenting a hallucinated label as a detected fact.
 
-`click` links to GitHub are added automatically when a `github.com` git remote is configured locally (no token, no API call) — synthetic nodes (actors, the "Distribution / build artifact" node) never get a link, since they aren't real repository paths.
+# Node granularity (new in v2.1.1) -- controls how much detail --diagram mermaid shows:
+project-context --tree-only --diagram mermaid --diagram-detail group # one node per package/group (default for --tree-only)
+project-context --diagram mermaid --diagram-detail file # one node per file, grouped into labeled subgraph blocks (default otherwise)
+
+# Edge density in --diagram-detail file mode only (new in v2.1.1):
+project-context --diagram mermaid --diagram-detail file --diagram-imports collapsed # hide same-package import edges (default)
+project-context --diagram mermaid --diagram-detail file --diagram-imports all # show every detected edge
+
+Then ADD this new paragraph immediately after that block:
+
+--diagram-detail (v2.1.1): auto (the default) resolves to group for --tree-only and file otherwise. group collapses each detected package/directory (and tests/, CI configs, root-level files) into a single node listing its member filenames as plain text, with cross-group relationships (e.g. "tests validates the project_context package") shown as one deduplicated edge per relationship type -- regardless of how many individual file pairs produced it. This is the direct fix for per-file diagrams becoming unreadable on any project past a handful of files: measured on this repository, --tree-only's default group diagram is 10 nodes/10 edges, versus 39 nodes/51 edges in file detail. Use --diagram-detail file when you need to see exactly which file imports which -- e.g. for --signatures-only, where per-file detail is already the point.
+
+--diagram-imports (v2.1.1): only affects --diagram-detail file mode (in group mode, same-package edges are dropped entirely as self-loops on the collapsed node, so this flag has nothing left to control). collapsed (the default) hides imports edges whose source and target live in the same subgraph group, since those are almost always intra-package plumbing that clutters the diagram without adding architectural insight; a comment in the output states how many were hidden. all renders every detected edge.
 
 ## MODULE ANALYSIS: deterministic tutorial-writing context (v2.0)
 
-`--analysis <path>` points every existing detector at a *different* local repository (not this tool's own `--root`) and appends a `CANDIDATE ABSTRACTIONS` + `RELATIONSHIPS` bundle designed to feed a beginner-tutorial-writing LLM chat. It is inspired by [PocketFlow-Tutorial-Codebase-Knowledge](https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge) (MIT License), which performs the equivalent step via 4 sequential LLM calls inside its own tool — this mode reproduces the same output *shape* with **zero LLM calls**, preserving this project's core design principle: the tool prepares context, a human's own LLM chat does the reasoning.
+`--analysis <path>` points every existing detector at a *different* local repository (not this tool's own `--root`) and appends a `CANDIDATE ABSTRACTIONS` + `RELATIONSHIPS` bundle designed to feed a beginner-tutorial-writing LLM chat. It is inspired by [PocketFlow-Tutorial-Codebase-Knowledge](https://github.com/The-Pocket/PocketFlow-Tutorial-Codebase-Knowledge) (MIT License), which performs the equivalent step with 2 sequential LLM calls inside its own tool — this mode reproduces the same output *shape* with **zero LLM calls**, preserving this project's core design principle: the tool prepares context, a human's own LLM chat does the reasoning.
 
 ```bash
 project-context --analysis /path/to/cloned/other-repo --output tutorial_context.md --max-abstractions 8
+# If you analyze your own repository (self-analysis)
+project-context --analysis . --no-baseline --max-abstractions 12
 ```
 
 - Candidate abstractions are ranked by real AST-extracted docstrings + import-usage count, not by an LLM's judgment — treat the ranking as a starting shortlist, not a final answer.
