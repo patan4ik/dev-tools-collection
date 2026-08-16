@@ -51,6 +51,10 @@ ABSTRACTION_ATTRIBUTION = (
     "call was made to produce this section."
 )
 
+FENCED_CODE_BLOCK_PATTERN = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.DOTALL)
+FLAG_TOKEN_PATTERN = re.compile(r"(--[a-zA-Z][a-zA-Z0-9-]*)")
+ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "vs.", "cf.")
+
 # ============================================================
 # NEW: add these two functions to analysis.py
 # ============================================================
@@ -120,7 +124,24 @@ def extract_file_abstractions(path: Path) -> list[dict]:
     return found
 
 
+def _first_sentence(text: str, max_len: int = 200) -> str:
+    """Cuts a description at the first REAL sentence boundary within
+    max_len -- ignores periods inside common abbreviations (e.g., i.e.,
+    etc.) and strips a leading numbered-list marker ("3. ") so its
+    period isn't mistaken for a sentence boundary either."""
+    text = re.sub(r"^\d+\.\s+", "", text.strip())
+    truncated = text[:max_len]
+    masked = truncated
+    for abbr in ABBREVIATIONS:
+        masked = masked.replace(abbr, abbr.replace(".", "\u0000"))
+    match = re.search(r"^(.*?[.!?])(\s|$)", masked)
+    if not match:
+        return truncated
+    return match.group(1).replace("\u0000", ".")
+
+
 def extract_readme_flag_mentions(files: list[Path], root: Path) -> dict[str, str]:
+
     readme = next((f for f in files if f.name.lower() == "readme.md"), None)
     if readme is None:
         return {}
@@ -128,21 +149,73 @@ def extract_readme_flag_mentions(files: list[Path], root: Path) -> dict[str, str
         content = readme.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return {}
+
+    prose_only = FENCED_CODE_BLOCK_PATTERN.sub("", content)
+
     descriptions: dict[str, str] = {}
-    for line in content.splitlines():
+    from_table_row: set[str] = set()
+
+    def _consider(flag: str, candidate_desc: str, *, is_table_row: bool = False) -> None:
+        candidate_desc = _first_sentence(candidate_desc)
+        existing = descriptions.get(flag)
+        if existing is None:
+            descriptions[flag] = candidate_desc
+            if is_table_row:
+                from_table_row.add(flag)
+            return
+        if flag in from_table_row and not is_table_row:
+            descriptions[flag] = candidate_desc
+            from_table_row.discard(flag)
+            return
+        if flag not in from_table_row and not is_table_row and len(candidate_desc) > len(existing):
+            descriptions[flag] = candidate_desc
+
+    # PASS 1: bullet-style flag definitions in prose (table rows
+    # deprioritized, not competing purely on length).
+    for line in prose_only.splitlines():
         flags_on_line = CLI_FLAG_MENTION_PATTERN.findall(line)
         if not flags_on_line:
             continue
-        cleaned = re.sub(r"^[-*]\s+", "", line.strip())
-        cleaned = cleaned.strip("`").strip()
+        stripped = line.strip()
+        is_table_row = stripped.startswith("|")
+        cleaned = re.sub(r"^[-*]\s+", "", stripped).strip("`").strip()
         for flag in flags_on_line:
-            if flag in descriptions:
-                continue
             per_flag = re.sub(rf"^`?{re.escape(flag)}`?\s*:?\s*", "", cleaned).strip()
             if per_flag and per_flag != flag:
-                descriptions[flag] = per_flag[:200]
+                _consider(flag, per_flag, is_table_row=is_table_row)
             elif len(cleaned) > len(flag):
-                descriptions[flag] = cleaned[:200]
+                _consider(flag, cleaned, is_table_row=is_table_row)
+
+    # PASS 2: the sentence immediately preceding a ```bash example command
+    # is this README's real description -- but ONLY when the command
+    # inside the block is actually invoking project-context itself, not
+    # a third-party tool (git, pip, python) whose OWN flags (e.g. git's
+    # --depth) must never be attributed to this project.
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            j = i - 1
+            while j >= 0 and not lines[j].strip():
+                j -= 1
+            if j < 0:
+                continue
+            preceding_prose = _first_sentence(lines[j].strip().rstrip(":"))
+            block_end = i + 1
+            while block_end < len(lines) and not lines[block_end].strip().startswith("```"):
+                block_end += 1
+            block_lines = lines[i + 1 : block_end]
+            for block_line in block_lines:
+                stripped_block_line = block_line.strip()
+                if not stripped_block_line:
+                    continue
+                # Only attribute flags to project-context if THIS line
+                # actually invokes project-context -- skip git/pip/python/
+                # other-tool lines entirely, even inside the same fence.
+                if not stripped_block_line.startswith("project-context"):
+                    continue
+                for flag in FLAG_TOKEN_PATTERN.findall(stripped_block_line):
+                    _consider(flag, preceding_prose, is_table_row=False)
+
     return descriptions
 
 
@@ -348,15 +421,25 @@ def render_tutorial_bundle(
 
     parts.append(render_documentation_inventory_section(readme_flags, changelog_highlights, drift))
 
-    parts.append("\n## RELATIONSHIPS (real import graph, not LLM-inferred)\n")
-    any_edges = False
-    for f in sorted(py_files, key=lambda p: p.relative_to(root).as_posix()):
-        rel = f.relative_to(root).as_posix()
-        for dep in depends_on.get(rel, []):
-            any_edges = True
-            parts.append(f"- `{rel}` --imports--> `{dep}`")
-    if not any_edges:
-        parts.append("- No cross-module imports detected.")
+    parts.append(
+        "\n## RELATIONSHIPS\n\n"
+        "The real, verified import graph for this project is already "
+        "rendered above under `## MODULE GRAPH` (deterministic, extracted "
+        "from actual `import` statements -- not LLM-inferred). Use that "
+        "section as your source for module dependency facts; it is not "
+        "repeated here to avoid duplicating the same ~50 edges twice in "
+        "one document.\n"
+    )
+
+    #    parts.append("\n## RELATIONSHIPS (real import graph, not LLM-inferred)\n")
+    #    any_edges = False
+    #    for f in sorted(py_files, key=lambda p: p.relative_to(root).as_posix()):
+    #        rel = f.relative_to(root).as_posix()
+    #        for dep in depends_on.get(rel, []):
+    #            any_edges = True
+    #            parts.append(f"- `{rel}` --imports--> `{dep}`")
+    #    if not any_edges:
+    #        parts.append("- No cross-module imports detected.")
 
     parts.append(
         "\n## INSTRUCTIONS FOR THE TUTORIAL-WRITING LLM\n"
@@ -414,10 +497,34 @@ def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
     warn_if_full_dump_overload(files, target_cfg)
 
     project_name = target_root.name
-    conventions = None if cfg.no_conventions else detect_conventions(target_cfg)
-    baseline = None if cfg.no_baseline else collect_mandatory_baseline(target_cfg)
-    reference_test = None if cfg.no_baseline else select_reference_test_file(target_cfg)
-    reference_source = None if cfg.no_baseline else select_reference_source_file(target_cfg)
+    # --analysis's own tutorial-writing instructions explicitly tell the
+    # reader to ignore PROJECT CONVENTIONS DETECTED / MANDATORY BASELINE
+    # FILES -- so unless the caller explicitly asks to KEEP them (a new
+    # --analysis-include-baseline flag, see below), skip generating them
+    # at all. This is the single largest size reduction available: those
+    # sections embed verbatim contract files (CI config, dependency
+    # manifest) that a beginner tutorial never references.
+    include_baseline_in_analysis = getattr(cfg, "analysis_include_baseline", False)
+    conventions = (
+        detect_conventions(target_cfg)
+        if include_baseline_in_analysis and not cfg.no_conventions
+        else None
+    )
+    baseline = (
+        collect_mandatory_baseline(target_cfg)
+        if include_baseline_in_analysis and not cfg.no_baseline
+        else None
+    )
+    reference_test = (
+        select_reference_test_file(target_cfg)
+        if include_baseline_in_analysis and not cfg.no_baseline
+        else None
+    )
+    reference_source = (
+        select_reference_source_file(target_cfg)
+        if include_baseline_in_analysis and not cfg.no_baseline
+        else None
+    )
 
     # Compute abstractions ONCE, reused for both the full-dump scoping
     # decision below and the CANDIDATE ABSTRACTIONS section inside
@@ -428,7 +535,13 @@ def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
     # CHANGED: architecture/conventions/baseline pass now runs
     # signatures-only (cheap: tree + signatures + module graph, no
     # bodies) instead of a full dump of every file's complete source.
-    architecture_cfg = replace(target_cfg, signatures_only=True)
+    # --analysis's architecture pass is ALWAYS meant to be a cheap
+    # overview -- force the compact group-detail diagram regardless of
+    # whether --tree-only was also passed, instead of silently falling
+    # back to expensive per-file diagram detail.
+    architecture_cfg = replace(
+        target_cfg, signatures_only=True, diagram_mode="mermaid", diagram_detail="group"
+    )
     parts = [
         render_markdown(
             files, architecture_cfg, conventions, baseline, reference_test, reference_source

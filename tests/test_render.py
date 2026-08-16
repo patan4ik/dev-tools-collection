@@ -150,3 +150,17 @@ def test_write_output_stdout_mode_returns_no_paths(tmp_path, capsys):
     assert written == []
     captured = capsys.readouterr()
     assert "hello world" in captured.out
+
+
+def test_write_output_creates_missing_parent_directory(tmp_path):
+    cfg = make_config(tmp_path, output=str(tmp_path / "nested" / "sub" / "out.md"))
+    written = write_output("hello world", cfg)
+    assert written[0].exists()
+    assert written[0].read_text() == "hello world"
+
+
+def test_write_output_creates_missing_parent_directory_for_split_parts(tmp_path):
+    cfg = make_config(tmp_path, output=str(tmp_path / "nested" / "out.md"), max_chars=5)
+    written = write_output("hello world", cfg)
+    assert len(written) > 1
+    assert all(p.exists() for p in written)

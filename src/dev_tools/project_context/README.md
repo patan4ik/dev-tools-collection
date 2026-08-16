@@ -139,15 +139,43 @@ The first run is a cheap reconnaissance pass (signatures only, no full bodies) t
 
 Both are 100% deterministic (AST + regex + local git/CI-config parsing) — no LLM call, no network access, no GitHub API/token required. Detected relationships include `imports`, `registers entry point`, `belongs to`, `documents`, `packages`, `validates`, `runs`, `builds from`, `produces`, `publishes build`, and `invokes`. Disable with `--diagram none`.
 
+## Additional flags
+
+A few flags exist for less common cases and weren't covered in the
+Examples above:
+
+Restricting the file-collection scope beyond `.gitignore`:
+```bash
+project-context --include-ext .rs,.go --output context.md
+project-context --exclude-dir vendor,build --output context.md
+```
+`--include-ext` adds extra file extensions to the default collected set (comma-separated, e.g. `.rs,.go`), for file types not covered by the built-in defaults. `--exclude-dir` adds extra directory names to skip during collection (comma-separated, e.g. `vendor,build`), on top of the built-in exclusions (`.git`, `.venv`, `node_modules`, etc.).
+
+Ignoring `.gitignore` entirely (e.g. to intentionally include files your `.gitignore` normally hides, such as generated artifacts you specifically want an LLM to see):
+```bash
+project-context --no-gitignore --output context.md
+```
+
+Generating a tutorial in a language other than English:
+```bash
+project-context --analysis ./cloned-repo --tutorial-language spanish --output tutorial.md
+```
+`--tutorial-language` (default `english`) sets the language the Step 1/Step 2 tutorial-writing instructions ask the executor LLM to write in -- it does not translate this tool's own deterministic output, only the instruction block appended for `--analysis` mode.
+
+Keeping `PROJECT CONVENTIONS DETECTED`/`MANDATORY BASELINE FILES` in `--analysis` output (off by default since v2.1.1, because the tutorial-writing instructions tell the reader to ignore them anyway -- see "MODULE ANALYSIS" below):
+```bash
+project-context --analysis ./cloned-repo --analysis-include-baseline --output tutorial.md
+```
+Use this only if you intend `--analysis`'s output for a code-integration task on the target repo rather than pure tutorial writing -- for tutorial generation, leave this off (the default) to keep the output smaller and focused.
+
 ## Merging `--graph` output into one file
 
-`--graph` intentionally writes one markdown file per module (plus `index.md`) rather than one flat file — that's what makes it navigable for scoped, iterative exploration. When you instead need to feed the whole graph to an LLM as a single attachment (most chat UIs accept one file, not a directory), use the bundled merge script:
-
+Merging `--graph`'s per-module output directory back into one file (see "Merging `--graph` output into one file" below) uses its own separate script, not a `project-context` flag:
 ```bash
 python scripts/collect_graph_context.py --input project_graph --output graph_context.md
 ```
+That script's `--input`/`--output` flags belong to `collect_graph_context.py`, not to `project-context` itself -- don't confuse the two when reading `--analysis`'s DOCUMENTED FEATURE INVENTORY output, which scans all `.py` files under the repo, including this helper script.
 
-It concatenates every `.md` file under the `--graph` output directory into one document, placing `index.md` first (since it's the entry point/map) and every other module after it in alphabetical order, each delimited by a `--- FILE: <relative path> ---` header so per-module boundaries stay visible to the model. This is a thin post-processing step over `--graph`'s own deterministic output — it adds no new detection logic and makes no additional claims about the codebase.
 
 ## Recommended workflow
 

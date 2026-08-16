@@ -23,6 +23,21 @@ Evaluated native-per-language rewrite vs. single core + pluggable tree-sitter ad
 
 - Follow-up (raised during v2.1.0 validation, not scheduled): `--report` currently only benchmarks `--analysis` when the flag is explicitly passed alongside `--report`; there is no default second target. Considered but deferred for this release: making `--report` benchmark self-analysis (`--analysis .`) automatically by default. Deferred because it would roughly double `--report`'s runtime on large repositories (self-analysis walks the same files a second time under a different renderer) with no way to opt out short of a new flag — needs its own flag design (e.g. `--report --no-self-analysis`) rather than a silent default change this close to tagging v2.1.0. Documented workaround for now: `project-context --report --analysis .`.
 
+# other deferred/future-work notes):
+
+- Considered and deferred (not started): a `--instructions <str>` flag for free-text tone/focus guidance appended to `--analysis`'s Step 2 writing instructions, plus a separate `--doc-style {tutorial, feature, architecture, api-reference}` flag to swap the actual Step 1/Step 2 template text (not just tone) — needed because tone-only injection into a tutorial-shaped template cannot produce a genuinely different document type (e.g. "write wiki pages" style instructions still produce tutorial-shaped chapter bodies, since `select_candidate_abstractions()`'s ranking and the hardcoded chapter template stay unchanged). Design is fully specified (in-code `DOC_STYLE_INSTRUCTIONS` dict in `analysis.py`, same pattern as `--tutorial-language`, zero new I/O, `tutorial` style byte-identical to current default) but not yet implemented — revisit in a future release.
+
+---
+
+## [2.1.2] - 2026-08-16
+
+### Fixed
+- **`--diagram mermaid` could emit syntactically fragile node labels when a real filename contained parentheses or double quotes** (e.g. `config (copy).py`), since filesystem-derived text was interpolated directly into Mermaid `["..."]`/`(("..."))` shape syntax with no escaping. Adapted the sanitization concept from OpenDeepWiki's `RepairMermaid` function (itself pure deterministic regex, despite its docstring's misleading "uses a large model" description — no LLM call was ever involved on their side either) to `project-context`'s architecture: sanitize at **label-construction time** via a new `_sanitize_mermaid_label_text()` helper, rather than as a post-hoc regex pass over the whole rendered markdown file. A new `_render_node_shape()` helper centralizes all three call sites that build a node shape string (group-detail synthetic nodes, file-detail subgraph nodes, file-detail ungrouped nodes), guaranteeing sanitization can't be accidentally skipped at any one of them. Also removed dead no-op code (`.replace("(", "\\u0028")...`) left over from an earlier draft of the sanitizer.
+
+### Testing
+- 3 new tests in `tests/test_diagram.py`: `test_group_node_label_sanitizes_parens_in_filename`, `test_file_detail_node_label_sanitizes_parens_in_filename`, `test_sanitize_mermaid_label_text_strips_quotes_and_parens` — all construct a real file with parentheses in its name and confirm the Mermaid output never contains the unescaped original text.
+
+
 ## [2.1.1] - 2026-08-13
 ### Added
 --diagram-detail {auto, file, group} (default auto, resolving to group for --tree-only and file otherwise): collapses each subgraph (CI, tests, root, and each src/<package> directory) into a single Mermaid node listing member filenames as plain text, instead of one node per file. Cross-group edges (e.g. tests --validates--> src/dev_tools/project_context) are aggregated and de-duplicated by (group, group, label); same-group edges (including all imports edges, which are almost always intra-package) are dropped as self-loops, since they'd add no information on a single collapsed node. Reduces a real 39-node/51-edge --tree-only diagram on this repository to 10 nodes/10 edges — the previous per-file diagram was unreadable on any project past a handful of files. --diagram-detail file keeps the full per-file rendering (subgraph grouping + --diagram-imports) for --signatures-only or explicit deep-dive use.

@@ -22,8 +22,32 @@ from .constants import (
 )
 
 # ============================================================
-# NEW helper: deterministic grouping by path, no inference
+# NEW sanitize at LABEL-CONSTRUCTION time, not as a post-hoc regex pass over the finished markdown file.
 # ============================================================
+
+
+def _sanitize_mermaid_label_text(text: str) -> str:
+    """Escapes characters that can break Mermaid flowchart node labels
+    even inside double-quoted ["..."] syntax: literal double quotes
+    (would prematurely close the label), and parentheses -- Mermaid
+    reserves "(" ")" for alternate node shapes and can misinterpret
+    them inside quoted label text on some renderer versions, per
+    OpenDeepWiki's documented workaround for the same class of bug."""
+    text = text.replace('"', "'")  # avoid premature label termination
+    text = re.sub(r"[()]", "", text)  # drop parens entirely (OpenDeepWiki's approach)
+    return text
+
+
+def _render_node_shape(rel: str, role: str) -> str:
+    """Builds a Mermaid node shape string for a single node, running
+    the label text through _sanitize_mermaid_label_text() exactly once
+    -- the single place every node shape (group-detail synthetic nodes,
+    file-detail subgraph nodes, file-detail ungrouped nodes) is built,
+    so no call site can accidentally skip sanitization."""
+    safe_rel = _sanitize_mermaid_label_text(rel)
+    if role == "actor":
+        return f"(({safe_rel}))"
+    return f'["{safe_rel}<br/>{role}"]'
 
 
 def _group_key(rel: str, root: Path) -> str | None:
@@ -61,11 +85,12 @@ def _render_group_node_label(group_name: str, rels: list[str]) -> str:
     """Plain-text member list inside a collapsed group node -- still a
     real, verbatim fact (the actual filenames), just aggregated rather
     than drawn as separate connected nodes."""
-    filenames = sorted(Path(r).name for r in rels)
+    filenames = sorted(_sanitize_mermaid_label_text(Path(r).name) for r in rels)
     preview = ", ".join(filenames[:6])
     if len(filenames) > 6:
         preview += f", +{len(filenames) - 6} more"
-    return f"{group_name}<br/><i>{len(rels)} files: {preview}</i>"
+    safe_group_name = _sanitize_mermaid_label_text(group_name)
+    return f"{safe_group_name}<br/><i>{len(rels)} files: {preview}</i>"
 
 
 def _aggregate_group_edges(
@@ -304,8 +329,7 @@ def render_module_graph_mermaid(
             lines.append(f'  {group_node_id[group_name]}["{group_label}"]')
         for rel in sorted(synthetic):
             role = node_labels[rel]
-            shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
-            lines.append(f"  {node_ids[rel]}{shape}")
+            lines.append(f"  {node_ids[rel]}{_render_node_shape(rel, role)}")
 
         node_to_group_for_agg = {rel: node_to_group.get(rel, rel) for rel in node_labels}
         agg_edges = _aggregate_group_edges(edges, node_to_group_for_agg)
@@ -353,14 +377,12 @@ def render_module_graph_mermaid(
         lines.append(f'  subgraph {safe_group_id}["{group_name}"]')
         for rel in sorted(rels):
             role = node_labels[rel]
-            shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
-            lines.append(f"    {node_ids[rel]}{shape}")
+            lines.append(f"    {node_ids[rel]}{_render_node_shape(rel, role)}")
         lines.append("  end")
 
     for rel in sorted(ungrouped):
         role = node_labels[rel]
-        shape = f"(({rel}))" if role == "actor" else f'["{rel}<br/>{role}"]'
-        lines.append(f"  {node_ids[rel]}{shape}")
+        lines.append(f"    {node_ids[rel]}{_render_node_shape(rel, role)}")
 
     edges_rendered = 0
     for src, dst, label, dashed in edges:

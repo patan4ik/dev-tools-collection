@@ -295,3 +295,36 @@ def test_click_links_have_slash_between_remote_prefix_and_path(tmp_path, monkeyp
     )
     assert "/blob/main/a.py" in result
     assert "/blob/maina.py" not in result
+
+
+def test_group_node_label_sanitizes_parens_in_filename(tmp_path):
+    (tmp_path / "config (copy).py").write_text("x = 1\n")
+    files = [tmp_path / "config (copy).py"]
+    # entry_points must reference the file so detect_module_graph_edges()
+    # produces at least one real edge -- otherwise render_module_graph_mermaid()
+    # returns "" before reaching any label-construction code at all.
+    entrypoints = {"my-tool": "config (copy).py"}
+    result = render_module_graph_mermaid(
+        files, tmp_path, entrypoints=entrypoints, diagram_detail="group"
+    )
+    assert result != ""  # sanity check: the function actually rendered something
+    assert "config (copy).py" not in result
+    assert "config copy.py" in result
+
+
+def test_file_detail_node_label_sanitizes_parens_in_filename(tmp_path):
+    (tmp_path / "config (copy).py").write_text("x = 1\n")
+    files = [tmp_path / "config (copy).py"]
+    entrypoints = {"my-tool": "config (copy).py"}
+    result = render_module_graph_mermaid(
+        files, tmp_path, entrypoints=entrypoints, diagram_detail="file"
+    )
+    assert result != ""
+    assert "config (copy).py" not in result
+    assert "config copy.py" in result
+
+
+def test_sanitize_mermaid_label_text_strips_quotes_and_parens():
+    from project_context.diagram import _sanitize_mermaid_label_text
+
+    assert _sanitize_mermaid_label_text('some"text(with)parens"') == "some'textwithparens'"

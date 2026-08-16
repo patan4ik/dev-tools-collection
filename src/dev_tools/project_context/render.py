@@ -267,6 +267,7 @@ def write_output(text: str, cfg: Config) -> list[Path]:
         return written_paths
 
     base_path = Path(cfg.output)
+    base_path.parent.mkdir(parents=True, exist_ok=True)  # <-- ADD THIS LINE
     if len(chunks) == 1:
         base_path.write_text(text, encoding="utf-8")
         written_paths.append(base_path)
@@ -274,6 +275,7 @@ def write_output(text: str, cfg: Config) -> list[Path]:
         stem, suffix = base_path.stem, base_path.suffix or ".md"
         for i, chunk in enumerate(chunks, start=1):
             part_path = base_path.with_name(f"{stem}_part{i}{suffix}")
+            part_path.parent.mkdir(parents=True, exist_ok=True)  # <-- ADD THIS LINE too
             part_path.write_text(chunk, encoding="utf-8")
             written_paths.append(part_path)
     return written_paths

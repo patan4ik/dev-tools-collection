@@ -36,6 +36,32 @@ def test_extract_readme_flag_mentions_captures_description(tmp_path):
     assert "prints extra diagnostic" in flags["--verbose"]
 
 
+def test_extract_readme_flag_mentions_ignores_other_tools_flags_in_same_block(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "Generating a tutorial context for a different repo:\n"
+        "```bash\n"
+        "git clone --depth 1 https://github.com/example/repo\n"
+        "project-context --analysis ./repo --output tutorial.md\n"
+        "```\n"
+    )
+    flags = extract_readme_flag_mentions([readme], tmp_path)
+    assert "--depth" not in flags  # git's own flag, not ours
+    assert "--analysis" in flags  # real project-context flag
+    assert "--output" in flags
+
+
+def test_extract_readme_flag_mentions_truncates_at_sentence_boundary(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "3. During iterative development, use `--changed-only` --clipboard "
+        "to refresh the model with only what you've actually modified. "
+        "This is a second sentence that should NOT appear in the description.\n"
+    )
+    flags = extract_readme_flag_mentions([readme], tmp_path)
+    assert "second sentence" not in flags.get("--changed-only", "")
+
+
 def test_extract_registered_cli_flags_finds_add_argument_calls(tmp_path):
     src = tmp_path / "cli.py"
     src.write_text(
@@ -283,3 +309,60 @@ def test_analysis_candidate_abstractions_and_key_files_stay_consistent(tmp_path)
     # main() is force-included as the detected entry point in both.
     assert "main" in output
     assert "return helper()" in output  # main's real body, verbatim, in KEY FILE CONTENTS
+
+
+def test_extract_readme_flag_mentions_prefers_prose_over_table_fragment(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "| Mode | Purpose |\n"
+        "|---|---|\n"
+        "| `--tree-only` | Architecture only, minimal exemplar, 14229 3397 93% |\n\n"
+        "## Examples\n\n"
+        "Architecture-only review (e.g. onboarding a new AI session):\n"
+        "```bash\n"
+        "project-context --tree-only\n"
+        "```\n"
+    )
+    flags = extract_readme_flag_mentions([readme], tmp_path)
+    assert "onboarding a new AI session" in flags["--tree-only"]
+    assert "93%" not in flags["--tree-only"]  # table fragment must lose
+
+
+def test_extract_readme_flag_mentions_captures_example_only_flags(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "Mid-refactor update -- only files you just edited:\n"
+        "```bash\n"
+        "project-context --changed-only --clipboard\n"
+        "```\n"
+    )
+    flags = extract_readme_flag_mentions([readme], tmp_path)
+    assert "--changed-only" in flags
+    assert "--clipboard" in flags
+    assert "Mid-refactor" in flags["--changed-only"]
+
+
+def test_first_sentence_does_not_break_on_abbreviation_period():
+    from project_context.analysis import _first_sentence
+
+    text = "Architecture-only review (e.g. onboarding a new AI session)"
+    assert _first_sentence(text) == text
+
+
+def test_first_sentence_strips_leading_numbered_list_marker():
+    from project_context.analysis import _first_sentence
+
+    text = (
+        "3. During iterative development, use --changed-only --clipboard "
+        "to refresh the model with only what you've actually modified."
+    )
+    result = _first_sentence(text)
+    assert not result.startswith("3.")
+    assert "During iterative development" in result
+
+
+def test_first_sentence_still_cuts_at_real_sentence_boundary():
+    from project_context.analysis import _first_sentence
+
+    text = "First real sentence. Second sentence that must be dropped."
+    assert _first_sentence(text) == "First real sentence."

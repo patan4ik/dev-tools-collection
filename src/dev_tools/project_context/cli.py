@@ -44,7 +44,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-VERSION = "2.1.1"
+VERSION = "2.1.2"
 
 if __package__ in (None, ""):
     # Direct script execution: `python cli.py ...`. Re-import this same
@@ -168,6 +168,14 @@ else:
         parser.add_argument("--no-baseline", action="store_true")
         parser.add_argument("--no-plan-gate", action="store_true")
         parser.add_argument(
+            "--analysis-include-baseline",
+            action="store_true",
+            dest="analysis_include_baseline",
+            help="Keep PROJECT CONVENTIONS DETECTED / MANDATORY BASELINE FILES "
+            "in --analysis output (off by default -- the tutorial-writing "
+            "instructions already tell the reader to ignore them).",
+        )
+        parser.add_argument(
             "--analysis",
             type=str,
             default=None,
@@ -221,12 +229,15 @@ else:
             report=args.report,
             integration_scope=args.integration_scope,
             diagram_mode=args.diagram_mode,
+            diagram_imports=args.diagram_imports,
+            diagram_detail=args.diagram_detail,
             no_conventions=args.no_conventions,
             no_baseline=args.no_baseline,
             no_plan_gate=args.no_plan_gate,
             analysis_target=args.analysis_target,
             analysis_max_abstractions=args.analysis_max_abstractions,
             analysis_language=args.analysis_language,
+            analysis_include_baseline=args.analysis_include_baseline,
             use_gitignore=not args.no_gitignore,
         )
 

@@ -45,6 +45,7 @@ class Config:
     analysis_target: str | None = None
     analysis_max_abstractions: int = 10
     analysis_language: str = "english"
+    analysis_include_baseline: bool = False
     include_ext: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_EXT))
     include_names: set[str] = field(default_factory=lambda: set(DEFAULT_INCLUDE_NAMES))
     exclude_dirs: set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
