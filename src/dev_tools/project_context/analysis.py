@@ -33,7 +33,6 @@ from .collectors import (
 from .config import Config
 from .constants import (
     ANALYSIS_OUTPUT_DIRNAME,
-    ARGPARSE_ADD_ARGUMENT_PATTERN,
     CHANGELOG_ENTRY_PATTERN,
     CLI_FLAG_MENTION_PATTERN,
 )
@@ -240,15 +239,36 @@ def extract_changelog_highlights(
 
 
 def extract_registered_cli_flags(files: list[Path]) -> set[str]:
+    """Real argparse flag registrations only: walks the AST looking for
+    Call nodes whose func is an attribute named exactly `add_argument`,
+    and collects string-literal positional arguments that look like a
+    CLI flag (start with `-`). Skips test modules entirely -- fixtures
+    that construct a throwaway ArgumentParser to exercise unrelated
+    code must never be attributed to this project's real CLI surface.
+    """
     flags: set[str] = set()
     for f in files:
-        if f.suffix != ".py":
+        if f.suffix != ".py" or is_test_module(f):
             continue
         try:
-            content = f.read_text(encoding="utf-8", errors="ignore")
+            source = f.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        flags.update(ARGPARSE_ADD_ARGUMENT_PATTERN.findall(content))
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+                continue
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if arg.value.startswith("-"):
+                        flags.add(arg.value)
     return flags
 
 
@@ -479,6 +499,27 @@ def default_analysis_output_path(target_root: Path) -> Path:
     return target_root / ANALYSIS_OUTPUT_DIRNAME / "tutorial_context.md"
 
 
+MAX_TUTORIAL_BUNDLE_LINES = 2000  # soft budget -- see run_analysis_mode()
+
+
+def validate_tutorial_bundle(text: str, max_lines: int = MAX_TUTORIAL_BUNDLE_LINES) -> list[str]:
+    """Structural sanity check on the generated --docs/--analysis bundle
+    BEFORE it is written to disk or printed. Catches regressions where a
+    future refactor of render_tutorial_bundle()/run_analysis_mode()
+    silently drops a required section, or where an unusually large
+    repository produces a bundle too big to be a useful LLM context --
+    without failing the run, since these are soft warnings, not errors."""
+    warnings: list[str] = []
+    line_count = len(text.splitlines())
+    if line_count > max_lines:
+        warnings.append(f"body: {line_count} lines > {max_lines} (soft budget for LLM context)")
+    if "## CANDIDATE ABSTRACTIONS" not in text:
+        warnings.append("missing CANDIDATE ABSTRACTIONS section")
+    if "## DOCUMENTED FEATURE INVENTORY" not in text:
+        warnings.append("missing DOCUMENTED FEATURE INVENTORY section")
+    return warnings
+
+
 def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
     target_root = Path(cfg.analysis_target).expanduser().resolve()
     if not target_root.exists() or not target_root.is_dir():
@@ -555,6 +596,8 @@ def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
         )
     )
     text = "\n\n".join(parts)
+    for warning in validate_tutorial_bundle(text):
+        print(f"Warning: {warning}", file=sys.stderr)
 
     if write_files:
         if cfg.output is None:

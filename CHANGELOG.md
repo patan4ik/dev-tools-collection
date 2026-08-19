@@ -1,33 +1,19 @@
 # Changelog
 
-## [Unreleased] — Roadmap checkpoint (updated)
-### Revised: v3.0
-- A standalone Windows desktop UI (tkinter, no new dependency, reuses the existing pyinstaller build pipeline), and multi-language support is deferred to v4.0. Rationale: a GUI expands the tool's reachable audience (non-CLI users) before investing in broader language coverage, and does not require or block the language-adapter architecture work.
+## [2.1.3] - 2026-08-19
 
-### Decision record: multi-language support path (still applies, now targeted at v4.0)
-Evaluated native-per-language rewrite vs. single core + pluggable tree-sitter adapters. Accepted: single core + adapters, matching SonarQube's and tree-sitter-based polyglot analyzers' precedent. Full rationale unchanged from the prior entry — see README.md Roadmap section. VB.NET grammar immaturity remains a known constraint.
+### Added
+- `validate_tutorial_bundle()` in `analysis.py`: structural sanity check run automatically on every `--docs`/`--analysis` bundle before it is
+  written or printed. Prints soft warnings to stderr (never fails the run) when the generated bundle exceeds 2000 lines, or is missing the expected `## CANDIDATE ABSTRACTIONS` or `## DOCUMENTED FEATURE INVENTORY` sections.
 
-- project-context currently understands Python only — every semantic detector (extract_signatures, build_dependency_graph, is_test_module, entry-point detection) is built on Python's ast module. v3.0 will add Java, C, and C++ support (VB.NET pending grammar maturity) via a pluggable language-adapter architecture on top of tree-sitter, not a per-language native rewrite.
+### Changed
+- **`--analysis` renamed to `--docs`.** The old name still works identically (`--analysis` is now a deprecated alias sharing the same underlying option) and will be removed in a future major version. Using `--analysis` now prints a one-line migration warning to stderr.
+- **`--analysis-include-baseline` renamed to `--docs-include-baseline`**, for consistency with the `--docs` rename above. `--analysis-include-baseline`
+  remains available as a deprecated alias with the same migration warning.
+- `extract_registered_cli_flags()` now uses AST-based detection (walks `ast.Call` nodes for `.add_argument(...)` calls with string-literal flag arguments) instead of a regular expression. This eliminates false positives from comments, docstrings, and string fixtures inside test files that merely construct a throwaway `ArgumentParser` to exercise unrelated code -- those were previously misreported as real, undocumented CLI flags in the `--docs` documentation-drift inventory.
 
-- Why not rewrite natively per language: analyzing a language's source text does not require the analyzer to be written in that same language — tree-sitter's parsing core is native C regardless of which host language calls it, so a Python-hosted analyzer parses Java/C++ at the same native speed a Java-hosted one would. A native-per-language rewrite would instead multiply maintenance cost N-fold (N codebases, N dependency trees, N CI pipelines) to re-implement functionality — PROJECT CONVENTIONS DETECTED, MANDATORY BASELINE FILES, --diagram, --analysis — that has nothing to do with the target language's syntax. This mirrors how industry tools solve the same problem: SonarQube supports Java/C#/JS/TS/Python from one core with per-language plugins; tree-sitter-based systems (e.g. Codebase-Memory) parse 60+ languages through one unified schema.
-
-### Planned architecture:
-
-- A LanguageAdapter interface replacing direct ast calls in astutils.py, implementing the same contract (extract_signatures, build_dependency_graph, is_test_module, detect_entry_points) already used throughout conventions.py/baseline.py/analysis.py — those modules call the abstraction today, not ast directly, so this refactor is scoped to one module.
-
-- Per-language adapters (java_adapter.py, c_adapter.py, cpp_adapter.py) backed by tree-sitter-language-pack, dispatched by file extension.
-
-- Per-language convention detectors: Maven/Gradle + Checkstyle/SpotBugs for Java; CMake/Makefile + clang-format/clang-tidy for C/C++, replacing the current pyproject.toml-only assumption.
-
-- Known gap to plan around: no mature tree-sitter grammar exists for VB.NET as of this writing (LINQ/XML literals and preprocessor directives are incompletely supported by the available community grammar) — VB support will lag Java/C/C++ or require a lower-confidence regex fallback, explicitly labeled as such.
-
-- Follow-up (raised during v2.1.0 validation, not scheduled): `--report` currently only benchmarks `--analysis` when the flag is explicitly passed alongside `--report`; there is no default second target. Considered but deferred for this release: making `--report` benchmark self-analysis (`--analysis .`) automatically by default. Deferred because it would roughly double `--report`'s runtime on large repositories (self-analysis walks the same files a second time under a different renderer) with no way to opt out short of a new flag — needs its own flag design (e.g. `--report --no-self-analysis`) rather than a silent default change this close to tagging v2.1.0. Documented workaround for now: `project-context --report --analysis .`.
-
-# other deferred/future-work notes):
-
-- Considered and deferred (not started): a `--instructions <str>` flag for free-text tone/focus guidance appended to `--analysis`'s Step 2 writing instructions, plus a separate `--doc-style {tutorial, feature, architecture, api-reference}` flag to swap the actual Step 1/Step 2 template text (not just tone) — needed because tone-only injection into a tutorial-shaped template cannot produce a genuinely different document type (e.g. "write wiki pages" style instructions still produce tutorial-shaped chapter bodies, since `select_candidate_abstractions()`'s ranking and the hardcoded chapter template stay unchanged). Design is fully specified (in-code `DOC_STYLE_INSTRUCTIONS` dict in `analysis.py`, same pattern as `--tutorial-language`, zero new I/O, `tutorial` style byte-identical to current default) but not yet implemented — revisit in a future release.
-
----
+### Fixed
+- Documentation-drift detection no longer falsely reports flags found only inside test fixtures (e.g. `--verbose` in a test's own `ArgumentParser` setup) as "implemented but undocumented" CLI options.
 
 ## [2.1.2] - 2026-08-16
 

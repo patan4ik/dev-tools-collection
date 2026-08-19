@@ -203,3 +203,43 @@ def test_report_prints_comparison_table(tmp_path):
     assert "full" in result.stdout
     assert "signatures-only" in result.stdout
     assert "graph" in result.stdout
+
+
+def test_docs_flag_sets_analysis_target(tmp_path):
+    make_sample_project(tmp_path)
+    result = run_tool(tmp_path, "--docs", str(tmp_path))
+    assert result.returncode == 0
+    assert "TUTORIAL CONTEXT" in result.stdout
+    assert "CANDIDATE ABSTRACTIONS" in result.stdout
+
+
+def test_deprecated_analysis_flag_still_works_identically_to_docs(tmp_path):
+    make_sample_project(tmp_path)
+    result_docs = run_tool(tmp_path, "--docs", str(tmp_path))
+    result_analysis = run_tool(tmp_path, "--analysis", str(tmp_path))
+    assert result_docs.returncode == 0
+    assert result_analysis.returncode == 0
+    assert result_docs.stdout == result_analysis.stdout
+
+
+def test_deprecated_analysis_flag_prints_migration_warning(tmp_path):
+    make_sample_project(tmp_path)
+    result = run_tool(tmp_path, "--analysis", str(tmp_path))
+    assert "deprecated" in result.stderr.lower()
+    assert "--docs" in result.stderr
+
+
+def test_docs_flag_prints_no_deprecation_warning(tmp_path):
+    make_sample_project(tmp_path)
+    result = run_tool(tmp_path, "--docs", str(tmp_path))
+    assert "deprecated" not in result.stderr.lower()
+
+
+def test_docs_include_baseline_deprecated_alias_still_works(tmp_path):
+    make_sample_project(tmp_path)
+    result_new = run_tool(tmp_path, "--docs", str(tmp_path), "--docs-include-baseline")
+    result_old = run_tool(tmp_path, "--docs", str(tmp_path), "--analysis-include-baseline")
+    assert result_new.returncode == 0
+    assert result_old.returncode == 0
+    assert result_new.stdout == result_old.stdout
+    assert "MANDATORY BASELINE FILES" in result_new.stdout

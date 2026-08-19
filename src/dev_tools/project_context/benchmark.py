@@ -100,7 +100,7 @@ def run_benchmark(cfg: Config) -> list[dict]:
     if cfg.analysis_target:
         analysis_cfg = replace(base_cfg, analysis_target=cfg.analysis_target)
         analysis_text = run_analysis_mode(analysis_cfg, write_files=False)
-        rows.append(measure(f"analysis:{Path(cfg.analysis_target).resolve().name}", analysis_text))
+        rows.append(measure(f"docs:{Path(cfg.analysis_target).resolve().name}", analysis_text))
 
     baseline_tokens = rows[0]["tokens"]
     for row in rows:

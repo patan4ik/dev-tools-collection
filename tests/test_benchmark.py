@@ -77,12 +77,12 @@ def test_report_does_not_write_output_file(tmp_path):
     assert not (tmp_path / "project_context.md").exists()
 
 
-def test_report_includes_analysis_row_only_when_target_given(tmp_path):
-    """--report must add an analysis:<repo-name> row only when
-    --analysis is explicitly passed -- there is no default second
+def test_report_includes_docs_row_only_when_target_given(tmp_path):
+    """--report must add an docs:<repo-name> row only when
+    --docs is explicitly passed -- there is no default second
     repository to benchmark, so nothing should be faked when absent."""
     make_sample_project(tmp_path)
-    other_repo = tmp_path.parent / "other_repo_for_analysis"
+    other_repo = tmp_path.parent / "other_repo_for_docs"
     other_repo.mkdir(exist_ok=True)
     (other_repo / "lib.py").write_text('"""A tiny library."""\ndef helper():\n    return 1\n')
 
@@ -91,7 +91,7 @@ def test_report_includes_analysis_row_only_when_target_given(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert "analysis:" not in result_without.stdout
+    assert "docs:" not in result_without.stdout
 
     result_with = subprocess.run(
         [
@@ -100,11 +100,11 @@ def test_report_includes_analysis_row_only_when_target_given(tmp_path):
             "--root",
             str(tmp_path),
             "--report",
-            "--analysis",
+            "--docs",
             str(other_repo),
         ],
         capture_output=True,
         text=True,
     )
     assert result_with.returncode == 0
-    assert "analysis:other_repo_for_analysis" in result_with.stdout
+    assert "docs:other_repo_for_docs" in result_with.stdout

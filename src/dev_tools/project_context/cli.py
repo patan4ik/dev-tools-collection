@@ -6,7 +6,7 @@ Thin CLI entry point for project-context. All actual logic lives in
 sibling modules (collectors, conventions, baseline, diagram, render,
 analysis, benchmark) -- this file only parses arguments and dispatches.
 
-Version: 2.1.0
+Version: 2.1.3
 
 NEW IN 2.1.0: split the previous single-file cli.py (~2400 lines) into
 a package of focused modules. Behavior is 100% unchanged -- pure
@@ -44,7 +44,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-VERSION = "2.1.2"
+VERSION = "2.1.3"
 
 if __package__ in (None, ""):
     # Direct script execution: `python cli.py ...`. Re-import this same
@@ -167,20 +167,43 @@ else:
         parser.add_argument("--no-conventions", action="store_true")
         parser.add_argument("--no-baseline", action="store_true")
         parser.add_argument("--no-plan-gate", action="store_true")
+        # --docs-include-baseline is the renamed primary flag. The old
+        # --analysis-include-baseline name is kept as a hidden, deprecated
+        # alias sharing the SAME dest, so existing scripts/CI using it keep
+        # working identically -- only the --help text and the canonical name
+        # change. Remove the deprecated alias in v3.0.
+        parser.add_argument(
+            "--docs-include-baseline",
+            action="store_true",
+            dest="analysis_include_baseline",
+            help="Keep PROJECT CONVENTIONS DETECTED / MANDATORY BASELINE FILES "
+            "in --docs output (off by default -- the tutorial-writing "
+            "instructions already tell the reader to ignore them).",
+        )
         parser.add_argument(
             "--analysis-include-baseline",
             action="store_true",
             dest="analysis_include_baseline",
-            help="Keep PROJECT CONVENTIONS DETECTED / MANDATORY BASELINE FILES "
-            "in --analysis output (off by default -- the tutorial-writing "
-            "instructions already tell the reader to ignore them).",
+            help=argparse.SUPPRESS,  # deprecated alias for --docs-include-baseline, remove in v3.0
+        )
+
+        # --docs is the renamed primary flag (was --analysis). Both flags
+        # share dest="analysis_target" so every downstream consumer
+        # (Config.analysis_target, run_analysis_mode(), etc.) needs ZERO
+        # changes -- only the CLI-facing name and help text change here.
+        parser.add_argument(
+            "--docs",
+            type=str,
+            default=None,
+            dest="analysis_target",
+            help="Path to a repository to generate tutorial-context documentation for.",
         )
         parser.add_argument(
             "--analysis",
             type=str,
             default=None,
             dest="analysis_target",
-            help="Path to a DIFFERENT, already-cloned local repository to analyze for tutorial-context generation.",
+            help=argparse.SUPPRESS,  # deprecated alias for --docs, remove in v3.0
         )
         parser.add_argument(
             "--max-abstractions", type=int, default=10, dest="analysis_max_abstractions"
@@ -257,6 +280,20 @@ else:
             sys.argv.extend(["--analysis", str(chosen_path)])
 
         cfg = parse_args()
+
+        # Deprecation warnings for v2.1.3 renamed flags -- both old flags still
+        # fully work (same dest as their replacement), this only informs the
+        # user so they can migrate before the v3.0 removal.
+        deprecated_flags_used = [
+            flag for flag in ("--analysis", "--analysis-include-baseline") if flag in sys.argv
+        ]
+        for flag in deprecated_flags_used:
+            replacement = "--docs" if flag == "--analysis" else "--docs-include-baseline"
+            print(
+                f"Warning: {flag} is deprecated, use {replacement} instead. "
+                f"Will be removed in a future major version.",
+                file=sys.stderr,
+            )
 
         if not cfg.root.exists():
             print(f"Error: directory {cfg.root} was not found", file=sys.stderr)

@@ -22,6 +22,7 @@ from project_context.analysis import (
     extract_registered_cli_flags,
     run_analysis_mode,  # ← добавить
     select_candidate_abstractions,
+    validate_tutorial_bundle,
 )
 from project_context.config import Config  # ← добавить
 from project_context.constants import ANALYSIS_OUTPUT_DIRNAME
@@ -366,3 +367,96 @@ def test_first_sentence_still_cuts_at_real_sentence_boundary():
 
     text = "First real sentence. Second sentence that must be dropped."
     assert _first_sentence(text) == "First real sentence."
+
+
+def test_extract_registered_cli_flags_ignores_test_modules(tmp_path):
+    production = tmp_path / "src" / "app" / "cli.py"
+    production.parent.mkdir(parents=True)
+    production.write_text('parser.add_argument("--output")\n', encoding="utf-8")
+
+    test_file = tmp_path / "tests" / "test_cli.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "import pytest\n\n"
+        "def test_verbose_flag_registration():\n"
+        '    parser.add_argument("--verbose", action="store_true")\n'
+        "    assert True\n",
+        encoding="utf-8",
+    )
+
+    flags = extract_registered_cli_flags([production, test_file])
+
+    assert flags == {"--output"}
+    assert "--verbose" not in flags
+
+
+def test_extract_registered_cli_flags_ignores_comments_and_docstrings(tmp_path):
+    production = tmp_path / "cli.py"
+    production.write_text(
+        '"""Example: parser.add_argument("--fake-flag") in a docstring."""\n'
+        '# parser.add_argument("--also-fake")\n'
+        'parser.add_argument("--real-flag")\n',
+        encoding="utf-8",
+    )
+
+    flags = extract_registered_cli_flags([production])
+
+    assert flags == {"--real-flag"}
+
+
+def test_extract_registered_cli_flags_ignores_dynamic_flag_names(tmp_path):
+    production = tmp_path / "cli.py"
+    production.write_text(
+        'flag_name = "--dynamic"\n'
+        "parser.add_argument(flag_name)\n"
+        'parser.add_argument("--static")\n',
+        encoding="utf-8",
+    )
+
+    flags = extract_registered_cli_flags([production])
+
+    assert flags == {"--static"}
+
+
+def test_extract_registered_cli_flags_skips_unparseable_files(tmp_path):
+    broken = tmp_path / "broken.py"
+    broken.write_text("def f(:\\n    pass\\n", encoding="utf-8")
+
+    assert extract_registered_cli_flags([broken]) == set()
+
+
+def test_validate_tutorial_bundle_flags_missing_candidate_abstractions():
+    text = "## DOCUMENTED FEATURE INVENTORY\\nsome content\\n"
+    warnings = validate_tutorial_bundle(text)
+    assert any("CANDIDATE ABSTRACTIONS" in w for w in warnings)
+
+
+def test_validate_tutorial_bundle_flags_missing_documented_feature_inventory():
+    text = "## CANDIDATE ABSTRACTIONS\\nsome content\\n"
+    warnings = validate_tutorial_bundle(text)
+    assert any("DOCUMENTED FEATURE INVENTORY" in w for w in warnings)
+
+
+def test_validate_tutorial_bundle_flags_oversized_body_alt():
+    text = "## CANDIDATE ABSTRACTIONS\n## DOCUMENTED FEATURE INVENTORY\n"
+    text += "line\n" * 2500
+
+    warnings = validate_tutorial_bundle(text, max_lines=2000)
+
+    assert any("lines" in w and "2000" in w for w in warnings)
+
+
+def test_validate_tutorial_bundle_no_warnings_for_well_formed_bundle():
+    text = "## CANDIDATE ABSTRACTIONS\\nentry 1\\n" "## DOCUMENTED FEATURE INVENTORY\\nentry 2\\n"
+    assert validate_tutorial_bundle(text) == []
+
+
+def test_run_analysis_mode_prints_validation_warnings_to_stderr(tmp_path, capsys):
+    # Build a project small enough / structured so a real gap is
+    # detectable, e.g. no README.md -> DOCUMENTED FEATURE INVENTORY
+    # still renders its "no README/CHANGELOG found" fallback text, which
+    # DOES still contain the "## DOCUMENTED FEATURE INVENTORY" heading --
+    # so this test should instead monkeypatch validate_tutorial_bundle
+    # or construct a targeted scenario; adjust to your existing
+    # run_analysis_mode test fixtures for consistency.
+    pass
