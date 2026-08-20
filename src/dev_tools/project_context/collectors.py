@@ -10,11 +10,13 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-import subprocess
-import sys
+import subprocess  # nosec B404 -- used only for local git status/remote/
 
-# branch lookups with fixed argv lists; see collectors.py's three
-# subprocess.run() call sites for the full justification.
+# branch lookups with fixed argv lists, never shell=True; see the
+# three subprocess.run() call sites in this file (get_changed_files,
+# get_git_remote_url, and the branch-name lookup) for the full
+# per-call justification already applied there.
+import sys
 from dataclasses import replace
 from pathlib import Path
 
