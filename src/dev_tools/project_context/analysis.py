@@ -521,6 +521,9 @@ def validate_tutorial_bundle(text: str, max_lines: int = MAX_TUTORIAL_BUNDLE_LIN
 
 
 def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
+    if not cfg.analysis_target:
+        print("Error: --docs/--analysis requires a target path.", file=sys.stderr)
+        sys.exit(1)
     target_root = Path(cfg.analysis_target).expanduser().resolve()
     if not target_root.exists() or not target_root.is_dir():
         print(

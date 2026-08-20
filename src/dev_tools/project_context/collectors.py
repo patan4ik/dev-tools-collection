@@ -12,6 +12,9 @@ import os
 import re
 import subprocess
 import sys
+
+# branch lookups with fixed argv lists; see collectors.py's three
+# subprocess.run() call sites for the full justification.
 from dataclasses import replace
 from pathlib import Path
 
@@ -53,7 +56,11 @@ def is_gitignored(rel_path: str, patterns: list[str]) -> bool:
 
 def get_changed_files(root: Path) -> set[str]:
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 B607 -- fixed argv list,
+            # no shell=True, "git" resolved via $PATH is expected and
+            # safe: this is a local developer CLI tool invoked by the
+            # user in their own trusted environment, not a service
+            # processing untrusted network input.
             ["git", "-C", str(root), "status", "--porcelain"],
             capture_output=True,
             text=True,
@@ -80,7 +87,10 @@ def get_changed_files(root: Path) -> set[str]:
 
 def get_git_remote_url(root: Path) -> str | None:
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 B607 -- fixed argv list,
+            # no shell=True, safe local-developer-tool git invocation;
+            # see collect_files()'s status --porcelain call above for
+            # full justification (identical reasoning applies here).
             ["git", "-C", str(root), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
@@ -95,7 +105,9 @@ def get_git_remote_url(root: Path) -> str | None:
     owner, repo = match.groups()
     branch = "main"
     try:
-        branch_result = subprocess.run(
+        branch_result = subprocess.run(  # nosec B603 B607 -- fixed
+            # argv list, no shell=True; see collect_files()'s
+            # status --porcelain call above for full justification.
             ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
