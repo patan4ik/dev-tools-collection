@@ -15,15 +15,14 @@
 
 ## Project context [2.1.3] - 2026-08-19
 
-### Added
-- `validate_tutorial_bundle()` in `analysis.py`: structural sanity check run automatically on every `--docs`/`--analysis` bundle before it is
-  written or printed. Prints soft warnings to stderr (never fails the run) when the generated bundle exceeds 2000 lines, or is missing the expected `## CANDIDATE ABSTRACTIONS` or `## DOCUMENTED FEATURE INVENTORY` sections.
+- Renamed `--analysis` to `--docs` (old flag still works, deprecated).
+- Renamed `--analysis-include-baseline` to `--docs-include-baseline` (old flag still works, deprecated).
+- Replaced regex-based CLI flag detection with AST-based detection (fixes false-positive documentation-drift reports).
+- Added `validate_tutorial_bundle()`: structural sanity check on generated `--docs` output.
+- Added `security_check.yml` CI workflow (mypy + bandit), zero actionable findings.
+- Renamed `--report`'s comparison-table label from `analysis:` to `docs:`.
 
-### Changed
-- **`--analysis` renamed to `--docs`.** The old name still works identically (`--analysis` is now a deprecated alias sharing the same underlying option) and will be removed in a future major version. Using `--analysis` now prints a one-line migration warning to stderr.
-- **`--analysis-include-baseline` renamed to `--docs-include-baseline`**, for consistency with the `--docs` rename above. `--analysis-include-baseline`
-  remains available as a deprecated alias with the same migration warning.
-- `extract_registered_cli_flags()` now uses AST-based detection (walks `ast.Call` nodes for `.add_argument(...)` calls with string-literal flag arguments) instead of a regular expression. This eliminates false positives from comments, docstrings, and string fixtures inside test files that merely construct a throwaway `ArgumentParser` to exercise unrelated code -- those were previously misreported as real, undocumented CLI flags in the `--docs` documentation-drift inventory.
+## [2.1.2] and earlier
 
 ### Fixed
 - Documentation-drift detection no longer falsely reports flags found only inside test fixtures (e.g. `--verbose` in a test's own `ArgumentParser` setup) as "implemented but undocumented" CLI options.
