@@ -26,3 +26,9 @@ balances_history/
 coverage.xml
 .coverage
 htmlcov/
+# Local meeting data and models (never publish)
+/meetings/
+/models/
+/audio-output/
+/local-validation/
+.mypy_cache/

@@ -260,11 +260,13 @@ def render_module_graph_text(files: list[Path], root: Path, entry_points: dict[s
     if not node_labels:
         return ""
     lines = ["\n## MODULE GRAPH (auto-generated, deterministic -- no LLM)\n"]
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    # seen = set()
     for src, dst, label, _dashed in edges:
         role = node_labels.get(src, "")
         lines.append(f"- `{src}`{f' [{role}]' if role else ''} --{label}--> `{dst}`")
-        seen.update((src, dst))
+        seen.add((src, dst))
+        # seen.update((src, dst))
     for rel in sorted(r for r in node_labels if r not in seen):
         lines.append(f"- `{rel}` [{node_labels.get(rel, '')}] (no detected relationships)")
     lines.append("")
