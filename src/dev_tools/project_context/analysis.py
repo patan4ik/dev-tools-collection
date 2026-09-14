@@ -521,13 +521,11 @@ def validate_tutorial_bundle(text: str, max_lines: int = MAX_TUTORIAL_BUNDLE_LIN
 
 
 def run_analysis_mode(cfg: Config, write_files: bool = True) -> str:
-    target_root = Path(cfg.analysis_target).expanduser().resolve()
-    if not target_root.exists() or not target_root.is_dir():
-        print(
-            f"Error: --analysis target does not exist or is not a directory: {target_root}",
-            file=sys.stderr,
-        )
+    if cfg.analysis_target is None:
+        print("Error: --analysis requires a target directory", file=sys.stderr)
         sys.exit(1)
+
+    target_root = Path(cfg.analysis_target).expanduser().resolve()
 
     target_cfg = replace(cfg, root=target_root, analysis_target=None)
     files = collect_files(target_cfg)

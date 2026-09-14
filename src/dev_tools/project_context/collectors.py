@@ -10,7 +10,10 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-import subprocess
+import shutil
+
+# Only fixed, read-only Git commands are executed via _run_git.
+import subprocess  # nosec B404
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +25,30 @@ from .constants import (
     MAX_FILE_SIZE_BYTES,
 )
 from .utils import dir_has_generated_marker
+
+
+def _run_git(root: Path, command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    """Run one approved Git query using the executable from the trusted system PATH."""
+    if command not in {
+        ("status", "--porcelain"),
+        ("remote", "get-url", "origin"),
+        ("rev-parse", "--abbrev-ref", "HEAD"),
+    }:
+        raise ValueError("Unsupported Git query")
+    executable = shutil.which("git")
+    if executable is None:
+        raise FileNotFoundError("Git executable was not found on PATH")
+    # PATH and the installed Git binary must be trusted. root is a separate -C
+    # value, resolved absolutely; no command text is interpreted by a shell.
+    # B603 reviewed: fixed query allowlist, argv list, shell=False.
+    return subprocess.run(  # nosec B603
+        [str(Path(executable).resolve()), "-C", str(root.resolve()), *command],
+        capture_output=True,
+        text=True,
+        check=True,
+        shell=False,
+        timeout=15,
+    )
 
 
 def load_gitignore_patterns(root: Path) -> list[str]:
@@ -53,15 +80,10 @@ def is_gitignored(rel_path: str, patterns: list[str]) -> bool:
 
 def get_changed_files(root: Path) -> set[str]:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        result = _run_git(root, ("status", "--porcelain"))
+    except (subprocess.SubprocessError, OSError):
         print(
-            "Warning: git was not found or this is not a git repository. --changed-only is ignored.",
+            "Warning: Git query failed or timed out. --changed-only is ignored.",
             file=sys.stderr,
         )
         return set()
@@ -80,13 +102,8 @@ def get_changed_files(root: Path) -> set[str]:
 
 def get_git_remote_url(root: Path) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        result = _run_git(root, ("remote", "get-url", "origin"))
+    except (subprocess.SubprocessError, OSError):
         return None
     url = result.stdout.strip()
     match = re.search(r"github\.com[:/]([\w.\-]+)/([\w.\-]+?)(?:\.git)?$", url)
@@ -95,15 +112,10 @@ def get_git_remote_url(root: Path) -> str | None:
     owner, repo = match.groups()
     branch = "main"
     try:
-        branch_result = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        branch_result = _run_git(root, ("rev-parse", "--abbrev-ref", "HEAD"))
         if branch_result.stdout.strip():
             branch = branch_result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.SubprocessError, OSError):
         pass
     return f"https://github.com/{owner}/{repo}/blob/{branch}/"
 

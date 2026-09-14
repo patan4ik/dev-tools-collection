@@ -45,3 +45,22 @@ jobs:
       - name: Run tests with coverage
         run: |
           pytest tests/ -v
+
+  meeting-context-quality:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install development tools (no audio models or drivers)
+        run: python -m pip install -e ".[dev]"
+      - name: Check types for the integrated module
+        run: python -m mypy --python-version 3.13 src/dev_tools/meeting_context
+      - name: Check security patterns in the integrated module
+        run: python -m bandit -r src/dev_tools/meeting_context
+      - name: Run meeting audio unit tests
+        run: python -m pytest tests/test_meeting_context_workflow.py tests/test_meeting_context_reliability.py tests/test_meeting_context_integration.py -v
