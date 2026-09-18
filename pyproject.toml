@@ -9,16 +9,19 @@ dependencies = []
 
 [project.optional-dependencies]
 report = ["tiktoken"]
+mp3 = ["mutagen>=1.47,<2"]
 audio = [
     "PyAudioWPatch>=0.2.12.7,<0.3; sys_platform == 'win32'",
     "faster-whisper>=1.1,<2",
     "huggingface-hub>=1,<2",
+    "mutagen>=1.47,<2",
 ]
 dev = ["pytest>=8", "pytest-cov>=5", "black>=25", "ruff>=0.11", "mypy>=1.15", "bandit>=1.8"]
 
 [project.scripts]
 project-context = "dev_tools.project_context.cli:main"
 meeting-context = "dev_tools.meeting_context.cli:main"
+mp3-manager = "dev_tools.mp3_manager.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -34,8 +37,6 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-
-
 
 [tool.ruff.lint]
 extend-ignore = ["E501"]
@@ -53,6 +54,7 @@ exclude_dirs = ["tests", ".venv"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
+"dev_tools.mp3_manager" = ["README.md"]
 "dev_tools.meeting_context" = ["templates/*.md", "templates/*.txt", "README.md"]
 
 [[tool.mypy.overrides]]
