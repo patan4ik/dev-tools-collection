@@ -33,7 +33,7 @@ jobs:
       - name: Install package with extras
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[report]"
+          pip install -e ".[report,mp3]"
           pip install black ruff pytest pytest-cov
 
       - name: Run Black (check only)
@@ -57,10 +57,17 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install development tools (no audio models or drivers)
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,mp3]"
       - name: Check types for the integrated module
         run: python -m mypy --python-version 3.13 src/dev_tools/meeting_context
       - name: Check security patterns in the integrated module
         run: python -m bandit -r src/dev_tools/meeting_context
       - name: Run meeting audio unit tests
         run: python -m pytest tests/test_meeting_context_workflow.py tests/test_meeting_context_reliability.py tests/test_meeting_context_integration.py -v
+
+      - name: Check MP3 manager types
+        run: python -m mypy --python-version 3.13 src/dev_tools/mp3_manager tests/test_mp3_manager.py
+      - name: Check MP3 manager subprocess usage
+        run: python -m bandit -r src/dev_tools/mp3_manager
+      - name: Run MP3 manager regression tests
+        run: python -m pytest tests/test_mp3_manager.py -v
